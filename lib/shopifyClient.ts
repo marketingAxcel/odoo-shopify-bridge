@@ -28,3 +28,4 @@ export async function getSomeProducts(limit = 3) {
   const data = await shopifyRequest(`products.json?limit=${limit}`);
   return data.products;
 }
+// test env update
