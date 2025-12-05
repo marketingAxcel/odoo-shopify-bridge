@@ -29,3 +29,46 @@ export async function getSomeProducts(limit = 3) {
   return data.products;
 }
 // test env update
+
+// NO importo el tipo de Odoo para no crear ciclos,
+// simplemente documento qué campos espero.
+type OdooProductLike = {
+  id: number;
+  name: string;
+  default_code: string;
+  list_price: number;
+  description_sale?: string;
+};
+
+/**
+ * Crear un producto en Shopify a partir de un producto de Odoo
+ * - Crea 1 variante con SKU = default_code
+ * - Precio = list_price
+ * - Inventario inicial en 0 (luego lo sincronizamos aparte)
+ */
+export async function createProductFromOdoo(p: OdooProductLike) {
+  const payload = {
+    product: {
+      title: p.name,
+      body_html: p.description_sale || "",
+      vendor: "Paytton Tires",
+      status: "active",
+      variants: [
+        {
+          sku: p.default_code,
+          price: p.list_price.toString(),
+          inventory_management: "shopify",
+          inventory_policy: "deny",
+          inventory_quantity: 0,
+        },
+      ],
+    },
+  };
+
+  const data = await shopifyRequest("products.json", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+
+  return data.product;
+}

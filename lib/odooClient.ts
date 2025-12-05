@@ -52,3 +52,39 @@ export async function findProductsBySku(skus: string[]) {
     list_price: number;
   }>;
 }
+
+// Tipito para productos que usaremos para Shopify
+export type OdooProductForSync = {
+  id: number;
+  name: string;
+  default_code: string;
+  list_price: number;
+  description_sale?: string;
+};
+
+/**
+ * Traer productos de Odoo por páginas
+ * - Solo productos de venta (sale_ok = true)
+ * - Solo los que tienen default_code (SKU) definido
+ */
+export async function getOdooProductsPage(
+  limit = 20,
+  offset = 0
+): Promise<OdooProductForSync[]> {
+  const domain = [
+    ["sale_ok", "=", true],
+    ["default_code", "!=", false],
+  ];
+  const fields = ["id", "name", "default_code", "list_price", "description_sale"];
+
+  const products = await odooRpc("product.product", "search_read", [
+    domain,
+    fields,
+  ], {
+    limit,
+    offset,
+  });
+
+  return products as OdooProductForSync[];
+}
+
