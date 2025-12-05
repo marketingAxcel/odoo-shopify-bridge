@@ -1,6 +1,23 @@
+// lib/shopifyClient.ts
+
+// Variables de entorno necesarias (definidas en Vercel):
+// SHOPIFY_STORE_DOMAIN = mvyu4p-em.myshopify.com
+// SHOPIFY_ACCESS_TOKEN = shpat_...
+// SHOPIFY_LOCATION_ID  = 86330769647
+
 const SHOP_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN!;
 const SHOP_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN!;
+const LOCATION_ID = Number(process.env.SHOPIFY_LOCATION_ID!);
 
+if (!SHOP_DOMAIN || !SHOP_TOKEN) {
+  console.warn(
+    "[ShopifyClient] Faltan variables de entorno SHOPIFY_STORE_DOMAIN o SHOPIFY_ACCESS_TOKEN"
+  );
+}
+
+/**
+ * Llamada REST genérica al Admin API de Shopify
+ */
 async function shopifyRequest(
   path: string,
   options: RequestInit = {}
@@ -16,7 +33,7 @@ async function shopifyRequest(
 
   if (!res.ok) {
     const text = await res.text();
-    console.error("Shopify error", res.status, text);
+    console.error("[Shopify error]", res.status, text);
     throw new Error(`Shopify request failed: ${res.status}`);
   }
 
@@ -24,14 +41,18 @@ async function shopifyRequest(
   return res.json();
 }
 
+/**
+ * Solo para pruebas: traer algunos productos
+ */
 export async function getSomeProducts(limit = 3) {
   const data = await shopifyRequest(`products.json?limit=${limit}`);
   return data.products;
 }
-// test env update
 
-// NO importo el tipo de Odoo para no crear ciclos,
-// simplemente documento qué campos espero.
+/**
+ * Tipo base de producto Odoo que esperamos recibir
+ * (lo mismo que devuelve getOdooProductsPage)
+ */
 type OdooProductLike = {
   id: number;
   name: string;
@@ -41,10 +62,26 @@ type OdooProductLike = {
 };
 
 /**
- * Crear un producto en Shopify a partir de un producto de Odoo
+ * Buscar variantes en Shopify por SKU
+ * (lo usamos para saber si el SKU ya existe o no)
+ */
+export async function getVariantsBySku(sku: string) {
+  const data = await shopifyRequest(
+    `variants.json?sku=${encodeURIComponent(sku)}`
+  );
+  return (data.variants || []) as Array<{
+    id: number;
+    product_id: number;
+    sku: string;
+    inventory_item_id: number;
+  }>;
+}
+
+/**
+ * Crear un producto nuevo en Shopify a partir de un producto de Odoo
  * - Crea 1 variante con SKU = default_code
- * - Precio = list_price
- * - Inventario inicial en 0 (luego lo sincronizamos aparte)
+ * - Precio = list_price (esto lo puedes cambiar si manejas precios en otro lado)
+ * - Inventario inicial = 0 (luego se sincroniza por separado)
  */
 export async function createProductFromOdoo(p: OdooProductLike) {
   const payload = {
@@ -56,7 +93,7 @@ export async function createProductFromOdoo(p: OdooProductLike) {
       variants: [
         {
           sku: p.default_code,
-          price: p.list_price.toString(),
+          price: p.list_price.toString(), // aquí podrías poner "0" si no quieres usar el precio de Odoo
           inventory_management: "shopify",
           inventory_policy: "deny",
           inventory_quantity: 0,
@@ -71,4 +108,101 @@ export async function createProductFromOdoo(p: OdooProductLike) {
   });
 
   return data.product;
+}
+
+/**
+ * Actualizar SOLO el precio de la variante cuyo SKU coincida
+ * (lo usamos dentro del upsert; puedes ignorarlo si no quieres tocar precios)
+ */
+export async function updateVariantPriceBySku(
+  sku: string,
+  newPrice: number
+) {
+  const variants = await getVariantsBySku(sku);
+  if (!variants.length) return null;
+
+  const variant = variants[0];
+
+  const payload = {
+    variant: {
+      id: variant.id,
+      price: newPrice.toString(),
+    },
+  };
+
+  const data = await shopifyRequest(`variants/${variant.id}.json`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+
+  return data.variant;
+}
+
+/**
+ * Upsert completo:
+ * - Si el SKU ya existe en Shopify → actualiza (por ahora solo precio)
+ * - Si NO existe → crea producto nuevo con 1 variante
+ */
+export async function upsertProductFromOdoo(p: OdooProductLike) {
+  const variants = await getVariantsBySku(p.default_code);
+
+  if (variants.length) {
+    // Ya existe → actualizar (si quieres, puedes desactivar esta línea
+    // para NO tocar precios y que solo sirva para saber que existe)
+    await updateVariantPriceBySku(p.default_code, p.list_price);
+
+    return {
+      mode: "updated" as const,
+      product_id: variants[0].product_id,
+      variant_id: variants[0].id,
+    };
+  }
+
+  // No existe → crear producto nuevo
+  const product = await createProductFromOdoo(p);
+  const variant = product.variants[0];
+
+  return {
+    mode: "created" as const,
+    product_id: product.id,
+    variant_id: variant.id,
+  };
+}
+
+/**
+ * Obtener inventory_item_id de una variante a partir del SKU
+ * (necesario para poder actualizar inventario)
+ */
+export async function getInventoryItemIdBySku(
+  sku: string
+): Promise<number | null> {
+  const variants = await getVariantsBySku(sku);
+  if (!variants.length) return null;
+  return variants[0].inventory_item_id;
+}
+
+/**
+ * Fijar el nivel de inventario (available) para un inventory_item_id
+ * en la LOCATION_ID configurada en env.
+ */
+export async function setInventoryLevel(
+  inventoryItemId: number,
+  available: number
+) {
+  if (!LOCATION_ID) {
+    throw new Error(
+      "SHOPIFY_LOCATION_ID no está definido en las variables de entorno"
+    );
+  }
+
+  const payload = {
+    location_id: LOCATION_ID,
+    inventory_item_id: inventoryItemId,
+    available,
+  };
+
+  return shopifyRequest("inventory_levels/set.json", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }

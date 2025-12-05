@@ -1,9 +1,25 @@
+// lib/odooClient.ts
+
+// Variables de entorno necesarias (en Vercel):
+// ODOO_URL     = https://axcel.odoo.com
+// ODOO_DB      = solutto-consulting-axcel-17-0-12745094
+// ODOO_UID     = 2
+// ODOO_API_KEY = 9b682d6ca74a7194c7f9978730989d136a9f9466 (ejemplo)
+
 const ODOO_URL = process.env.ODOO_URL!;
 const ODOO_DB = process.env.ODOO_DB!;
 const ODOO_UID = Number(process.env.ODOO_UID!);
 const ODOO_API_KEY = process.env.ODOO_API_KEY!;
 
+if (!ODOO_URL || !ODOO_DB || !ODOO_UID || !ODOO_API_KEY) {
+  console.warn(
+    "[OdooClient] Faltan variables de entorno (ODOO_URL, ODOO_DB, ODOO_UID, ODOO_API_KEY)"
+  );
+}
 
+/**
+ * Llamada genérica JSON-RPC a Odoo
+ */
 async function odooRpc<T = any>(
   model: string,
   method: string,
@@ -29,7 +45,7 @@ async function odooRpc<T = any>(
 
   const data = await res.json();
   if (data.error) {
-    console.error("Odoo error:", data.error);
+    console.error("[Odoo error]", data.error);
     throw new Error(
       data.error.data?.message || data.error.message || "Odoo RPC error"
     );
@@ -37,6 +53,9 @@ async function odooRpc<T = any>(
   return data.result;
 }
 
+/**
+ * Solo para testear (ya lo usaste en /api/odoo-test)
+ */
 export async function findProductsBySku(skus: string[]) {
   if (!skus.length) return [];
   const domain = [["default_code", "in", skus]];
@@ -53,6 +72,10 @@ export async function findProductsBySku(skus: string[]) {
   }>;
 }
 
+/**
+ * Productos de Odoo para sincronizar con Shopify
+ * (llantas PAY...)
+ */
 export type OdooProductForSync = {
   id: number;
   name: string;
@@ -61,17 +84,20 @@ export type OdooProductForSync = {
   description_sale?: string;
 };
 
+/**
+ * Traer una página de productos desde Odoo
+ * - Solo llantas: default_code que empiece por "PAY"
+ * - Usado por /api/sync-products y /api/sync-stock
+ */
 export async function getOdooProductsPage(
   limit = 20,
   offset = 0
 ): Promise<OdooProductForSync[]> {
-  // Solo llantas: SKU que empiece por "PAY"
   const domain = [
     ["default_code", "ilike", "PAY%"], // SKUs que arrancan con PAY
-    // Opcional: descomenta esta línea si quieres solo productos vendibles
+    // Si quieres solo vendibles, descomenta:
     // ["sale_ok", "=", true],
   ];
-
   const fields = ["id", "name", "default_code", "list_price", "description_sale"];
 
   const products = await odooRpc("product.product", "search_read", [
@@ -85,3 +111,32 @@ export async function getOdooProductsPage(
   return products as OdooProductForSync[];
 }
 
+/**
+ * Línea de stock por producto
+ */
+export type OdooStockLine = {
+  default_code: string;
+  qty_available: number;
+};
+
+/**
+ * Obtener stock (qty_available) en Odoo por lista de SKUs
+ */
+export async function getOdooStockBySkus(
+  skus: string[]
+): Promise<OdooStockLine[]> {
+  if (!skus.length) return [];
+
+  const domain = [["default_code", "in", skus]];
+  const fields = ["default_code", "qty_available"];
+
+  const products = await odooRpc("product.product", "search_read", [
+    domain,
+    fields,
+  ]);
+
+  return (products as any[]).map((p) => ({
+    default_code: p.default_code as string,
+    qty_available: (p.qty_available as number) ?? 0,
+  }));
+}
