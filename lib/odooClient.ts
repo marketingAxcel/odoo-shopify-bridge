@@ -1,13 +1,9 @@
-// lib/odooClient.ts
-
 const ODOO_URL = process.env.ODOO_URL!;
 const ODOO_DB = process.env.ODOO_DB!;
 const ODOO_UID = Number(process.env.ODOO_UID!);
 const ODOO_API_KEY = process.env.ODOO_API_KEY!;
 
-/**
- * Llamada genérica JSON-RPC a Odoo
- */
+
 async function odooRpc<T = any>(
   model: string,
   method: string,
@@ -41,9 +37,6 @@ async function odooRpc<T = any>(
   return data.result;
 }
 
-/**
- * Buscar productos por SKU (default_code)
- */
 export async function findProductsBySku(skus: string[]) {
   if (!skus.length) return [];
   const domain = [["default_code", "in", skus]];

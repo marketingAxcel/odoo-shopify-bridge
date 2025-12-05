@@ -1,29 +1,14 @@
-// app/api/odoo-test/route.ts
 import { NextRequest } from "next/server";
-import { findProductsBySku } from "@/lib/odooClient";
+import { getSomeProducts } from "@/lib/shopifyClient";
 
-export async function GET(req: NextRequest) {
+export async function GET(_req: NextRequest) {
   try {
-    const { searchParams } = new URL(req.url);
-    const sku = searchParams.get("sku") || "";
-
-    if (!sku) {
-      return new Response(
-        JSON.stringify({
-          error: "Falta parámetro ?sku=CODIGO_EN_ODOO",
-        }),
-        {
-          status: 400,
-          headers: { "Content-Type": "application/json" },
-        }
-      );
-    }
-
-    const products = await findProductsBySku([sku]);
+    const products = await getSomeProducts(3);
 
     return new Response(
       JSON.stringify({
         ok: true,
+        count: products.length,
         products,
       }),
       {
@@ -32,7 +17,7 @@ export async function GET(req: NextRequest) {
       }
     );
   } catch (err: any) {
-    console.error("Error Odoo test:", err);
+    console.error("Error Shopify test:", err);
     return new Response(
       JSON.stringify({
         error: err?.message || "Error interno",
