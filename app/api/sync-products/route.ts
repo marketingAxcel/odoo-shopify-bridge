@@ -1,4 +1,3 @@
-// app/api/sync-products/route.ts
 import { NextRequest } from "next/server";
 import { getOdooProductsPage } from "@/lib/odooClient";
 import { createProductFromOdoo } from "@/lib/shopifyClient";
@@ -9,7 +8,6 @@ export async function POST(req: NextRequest) {
     const limit = Number(searchParams.get("limit") || "10");
     const offset = Number(searchParams.get("offset") || "0");
 
-    // 1) Traer productos desde Odoo
     const odooProducts = await getOdooProductsPage(limit, offset);
 
     const created: Array<{
@@ -18,7 +16,8 @@ export async function POST(req: NextRequest) {
       sku: string;
     }> = [];
 
-    // 2) Crear productos en Shopify
+    const errors: Array<{ odoo_id: number; sku: string; message: string }> = [];
+
     for (const p of odooProducts) {
       try {
         const shopProduct = await createProductFromOdoo(p);
@@ -27,20 +26,23 @@ export async function POST(req: NextRequest) {
           shopify_id: shopProduct.id,
           sku: p.default_code,
         });
-      } catch (err) {
-        console.error(
-          "Error creando producto en Shopify",
-          p.default_code,
-          err
-        );
+      } catch (err: any) {
+        console.error("Error creando producto en Shopify", p.default_code, err);
+        errors.push({
+          odoo_id: p.id,
+          sku: p.default_code,
+          message: err?.message || "Error desconocido",
+        });
       }
     }
 
     return new Response(
       JSON.stringify({
         ok: true,
-        synced: created.length,
+        fetched_from_odoo: odooProducts.length, // cuántas llantas vinieron de Odoo
+        synced: created.length,                 // cuántas se crearon en Shopify
         items: created,
+        errors,
       }),
       {
         status: 200,
