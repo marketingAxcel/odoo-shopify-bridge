@@ -1,0 +1,116 @@
+// app/api/sync-stock-all/route.ts
+import { NextRequest } from "next/server";
+import { getOdooProductsPage, getOdooStockBySkus } from "@/lib/odooClient";
+import {
+  getInventoryItemIdBySku,
+  setInventoryLevel,
+} from "@/lib/shopifyClient";
+
+/**
+ * Recorre TODAS las llantas PAY en Odoo
+ * y sincroniza su inventario hacia Shopify.
+ *
+ * Uso:
+ *   POST /api/sync-stock-all
+ */
+export async function POST(_req: NextRequest) {
+  try {
+    const PAGE_SIZE = 50;
+    let offset = 0;
+
+    let processedSkus = 0;
+    let updated = 0;
+    const details: Array<{
+      sku: string;
+      odoo_qty: number;
+      inventory_item_id: number | null;
+      shopify_available: number | null;
+      location_id: number | null;
+      error?: string;
+    }> = [];
+
+    while (true) {
+      // 1) Traemos una página de llantas PAY
+      const odooProducts = await getOdooProductsPage(PAGE_SIZE, offset);
+      if (!odooProducts.length) break;
+
+      const skus = odooProducts.map((p) => p.default_code);
+      processedSkus += skus.length;
+
+      // 2) Stock desde Odoo para esos SKUs
+      const stockLines = await getOdooStockBySkus(skus);
+
+      // 3) Actualizar inventario en Shopify
+      for (const line of stockLines) {
+        const detail: any = {
+          sku: line.default_code,
+          odoo_qty: line.qty_available,
+          inventory_item_id: null,
+          shopify_available: null,
+          location_id: null,
+        };
+
+        try {
+          const inventoryItemId = await getInventoryItemIdBySku(
+            line.default_code
+          );
+
+          if (!inventoryItemId) {
+            detail.error =
+              "No se encontró variante en Shopify para este SKU (¿ya está sincronizado el producto?)";
+            details.push(detail);
+            continue;
+          }
+
+          detail.inventory_item_id = inventoryItemId;
+
+          const level = await setInventoryLevel(
+            inventoryItemId,
+            line.qty_available
+          );
+
+          detail.shopify_available =
+            typeof level?.available === "number" ? level.available : null;
+          detail.location_id =
+            typeof level?.location_id === "number" ? level.location_id : null;
+
+          updated++;
+        } catch (err: any) {
+          console.error(
+            "Error actualizando inventario",
+            line.default_code,
+            err
+          );
+          detail.error = err?.message || "Error desconocido";
+        }
+
+        details.push(detail);
+      }
+
+      offset += PAGE_SIZE;
+      if (offset > 5000) break; // freno de seguridad
+    }
+
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        processed_skus: processedSkus,
+        updated,
+        details,
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }
+    );
+  } catch (err: any) {
+    console.error("Error en sync-stock-all:", err);
+    return new Response(
+      JSON.stringify({ error: err?.message || "Error interno" }),
+      {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      }
+    );
+  }
+}
