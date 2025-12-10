@@ -65,17 +65,50 @@ type OdooProductLike = {
  * Buscar variantes en Shopify por SKU
  * (lo usamos para saber si el SKU ya existe o no)
  */
+// Busca variantes en Shopify por SKU recorriendo productos
 export async function getVariantsBySku(sku: string) {
-  const data = await shopifyRequest(
-    `variants.json?sku=${encodeURIComponent(sku)}`
-  );
-  return (data.variants || []) as Array<{
+  const matches: Array<{
     id: number;
     product_id: number;
     sku: string;
     inventory_item_id: number;
-  }>;
+  }> = [];
+
+  let sinceId = 0;
+
+  while (true) {
+    // Traemos productos por páginas (máx 250) solo con id y variants
+    const url = `products.json?limit=250&fields=id,variants${
+      sinceId ? `&since_id=${sinceId}` : ""
+    }`;
+
+    const data = await shopifyRequest(url);
+    const products = (data.products || []) as any[];
+
+    if (!products.length) {
+      break;
+    }
+
+    for (const p of products) {
+      for (const v of p.variants || []) {
+        if (v.sku === sku) {
+          matches.push({
+            id: v.id,
+            product_id: p.id,
+            sku: v.sku,
+            inventory_item_id: v.inventory_item_id,
+          });
+        }
+      }
+    }
+
+    // Para la siguiente página
+    sinceId = products[products.length - 1].id;
+  }
+
+  return matches;
 }
+
 
 /**
  * Crear un producto nuevo en Shopify a partir de un producto de Odoo
