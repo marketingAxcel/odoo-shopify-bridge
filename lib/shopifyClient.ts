@@ -185,6 +185,8 @@ export async function getInventoryItemIdBySku(
  * Fijar el nivel de inventario (available) para un inventory_item_id
  * en la LOCATION_ID configurada en env.
  */
+// lib/shopifyClient.ts
+
 export async function setInventoryLevel(
   inventoryItemId: number,
   available: number
@@ -201,8 +203,13 @@ export async function setInventoryLevel(
     available,
   };
 
-  return shopifyRequest("inventory_levels/set.json", {
+  const data = await shopifyRequest("inventory_levels/set.json", {
     method: "POST",
     body: JSON.stringify(payload),
   });
+
+  // Shopify responde algo como:
+  // { "inventory_level": { inventory_item_id, location_id, available, ... } }
+  return data.inventory_level;
 }
+

@@ -8,21 +8,9 @@ import {
 
 /**
  * Sincroniza inventario de llantas PAY desde Odoo hacia Shopify.
- *
- * Usa la misma lógica de paginación que /api/sync-products:
- *  - limit:  cuántos productos PAY traer de Odoo (default 20)
- *  - offset: desde qué índice empezar (default 0)
- *
- * Flujo:
- *  1) Trae llantas PAY desde Odoo (getOdooProductsPage)
- *  2) Saca sus SKUs
- *  3) Pide qty_available desde Odoo (getOdooStockBySkus)
- *  4) Por cada SKU:
- *      - Busca inventory_item_id en Shopify
- *      - Llama a inventory_levels/set con ese qty_available
- *
- * Ejemplo:
- *  POST /api/sync-stock?limit=20&offset=0
+ * Además, devuelve por cada SKU:
+ *  - cuánto stock tenía Odoo
+ *  - qué respondió Shopify (available, location_id, etc.)
  */
 export async function POST(req: NextRequest) {
   try {
@@ -41,7 +29,7 @@ export async function POST(req: NextRequest) {
           message: "No hay productos PAY en este rango",
           processed_skus: 0,
           updated: 0,
-          errors: [],
+          details: [],
         }),
         {
           status: 200,
@@ -54,25 +42,50 @@ export async function POST(req: NextRequest) {
     const stockLines = await getOdooStockBySkus(skus);
 
     let updated = 0;
-    const errors: Array<{ sku: string; message: string }> = [];
+    const details: Array<{
+      sku: string;
+      odoo_qty: number;
+      inventory_item_id: number | null;
+      shopify_available: number | null;
+      location_id: number | null;
+      error?: string;
+    }> = [];
 
     // 3) Actualizar inventario en Shopify para cada SKU
     for (const line of stockLines) {
+      const detail: any = {
+        sku: line.default_code,
+        odoo_qty: line.qty_available,
+        inventory_item_id: null,
+        shopify_available: null,
+        location_id: null,
+      };
+
       try {
         const inventoryItemId = await getInventoryItemIdBySku(
           line.default_code
         );
 
         if (!inventoryItemId) {
-          errors.push({
-            sku: line.default_code,
-            message:
-              "No se encontró variante en Shopify para este SKU (¿no se ha sincronizado el producto?)",
-          });
+          detail.error =
+            "No se encontró variante en Shopify para este SKU (¿no se ha sincronizado el producto?)";
+          details.push(detail);
           continue;
         }
 
-        await setInventoryLevel(inventoryItemId, line.qty_available);
+        detail.inventory_item_id = inventoryItemId;
+
+        const level = await setInventoryLevel(
+          inventoryItemId,
+          line.qty_available
+        );
+
+        // level debería traer { available, location_id, inventory_item_id, ... }
+        detail.shopify_available =
+          typeof level?.available === "number" ? level.available : null;
+        detail.location_id =
+          typeof level?.location_id === "number" ? level.location_id : null;
+
         updated++;
       } catch (err: any) {
         console.error(
@@ -80,11 +93,10 @@ export async function POST(req: NextRequest) {
           line.default_code,
           err
         );
-        errors.push({
-          sku: line.default_code,
-          message: err?.message || "Error desconocido",
-        });
+        detail.error = err?.message || "Error desconocido";
       }
+
+      details.push(detail);
     }
 
     return new Response(
@@ -92,7 +104,7 @@ export async function POST(req: NextRequest) {
         ok: true,
         processed_skus: skus.length,
         updated,
-        errors,
+        details,
       }),
       {
         status: 200,
