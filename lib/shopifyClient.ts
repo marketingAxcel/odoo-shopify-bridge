@@ -109,6 +109,42 @@ export async function getVariantsBySku(sku: string) {
   return matches;
 }
 
+// lib/shopifyClient.ts (añadir después de getVariantsBySku)
+
+/**
+ * Trae TODOS los productos de Shopify y construye
+ * un mapa SKU -> inventory_item_id
+ * (para no tener que preguntarle a Shopify SKU por SKU)
+ */
+export async function getAllInventoryItemsBySku(): Promise<Record<string, number>> {
+  const map: Record<string, number> = {};
+  let sinceId = 0;
+
+  while (true) {
+    const url = `products.json?limit=250&fields=id,variants${
+      sinceId ? `&since_id=${sinceId}` : ""
+    }`;
+
+    const data = await shopifyRequest(url);
+    const products = (data.products || []) as any[];
+
+    if (!products.length) break;
+
+    for (const p of products) {
+      for (const v of p.variants || []) {
+        if (v.sku) {
+          map[v.sku] = v.inventory_item_id;
+        }
+      }
+    }
+
+    // siguiente página
+    sinceId = products[products.length - 1].id;
+  }
+
+  return map;
+}
+
 
 /**
  * Crear un producto nuevo en Shopify a partir de un producto de Odoo

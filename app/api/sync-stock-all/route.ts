@@ -2,7 +2,7 @@
 import { NextRequest } from "next/server";
 import { getOdooProductsPage, getOdooStockBySkus } from "@/lib/odooClient";
 import {
-  getInventoryItemIdBySku,
+  getAllInventoryItemsBySku,
   setInventoryLevel,
 } from "@/lib/shopifyClient";
 
@@ -29,18 +29,23 @@ export async function POST(_req: NextRequest) {
       error?: string;
     }> = [];
 
+    // 🔹 1) Cargar SOLO una vez todos los SKUs de Shopify
+    //     para evitar miles de requests
+    const skuToInventoryItem: Record<string, number> =
+      await getAllInventoryItemsBySku();
+
+    // 🔹 2) Paginamos productos en Odoo
     while (true) {
-      // 1) Traemos una página de llantas PAY
       const odooProducts = await getOdooProductsPage(PAGE_SIZE, offset);
       if (!odooProducts.length) break;
 
       const skus = odooProducts.map((p) => p.default_code);
       processedSkus += skus.length;
 
-      // 2) Stock desde Odoo para esos SKUs
+      // Stock desde Odoo para esos SKUs
       const stockLines = await getOdooStockBySkus(skus);
 
-      // 3) Actualizar inventario en Shopify
+      // 🔹 3) Actualizar inventario en Shopify
       for (const line of stockLines) {
         const detail: any = {
           sku: line.default_code,
@@ -51,13 +56,11 @@ export async function POST(_req: NextRequest) {
         };
 
         try {
-          const inventoryItemId = await getInventoryItemIdBySku(
-            line.default_code
-          );
+          const inventoryItemId = skuToInventoryItem[line.default_code];
 
           if (!inventoryItemId) {
             detail.error =
-              "No se encontró variante en Shopify para este SKU (¿ya está sincronizado el producto?)";
+              "No se encontró variante en Shopify para este SKU (¿no se ha sincronizado el producto?)";
             details.push(detail);
             continue;
           }
