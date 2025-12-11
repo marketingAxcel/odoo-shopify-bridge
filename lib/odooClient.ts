@@ -141,11 +141,6 @@ export async function getOdooStockBySkus(
   }));
 }
 
-export type OdooPriceLine = {
-  default_code: string;
-  price: number;
-};
-
 /**
  * Obtener precios desde una lista de precios específica
  * para una lista de SKUs (default_code).
@@ -158,15 +153,32 @@ export type OdooPriceLine = {
  * Prioridad:
  *   variante > template > categoría > global
  */
+export type OdooPriceLine = {
+  default_code: string;
+  price: number;
+};
+
+/**
+ * Obtener precios desde una lista de precios específica
+ * para una lista de SKUs (default_code).
+ *
+ * Usa SOLO la lista de precios (PRECIOFULL):
+ *   - variante (product_id)
+ *   - template (product_tmpl_id)
+ *   - categoría (categ_id)
+ *   - global
+ *
+ * Si NO hay ninguna regla aplicable → NO devuelve precio para ese SKU.
+ */
 export async function getPricesFromPricelistForSkus(
   pricelistId: number,
   skus: string[]
 ): Promise<OdooPriceLine[]> {
   if (!skus.length) return [];
 
-  // 1) Productos por default_code (incluyendo list_price)
+  // 1) Productos por default_code (no usamos list_price aquí)
   const productDomain = [["default_code", "in", skus]];
-  const productFields = ["id", "default_code", "list_price", "product_tmpl_id", "categ_id"];
+  const productFields = ["id", "default_code", "product_tmpl_id", "categ_id"];
 
   const products = (await odooRpc(
     "product.product",
@@ -175,20 +187,16 @@ export async function getPricesFromPricelistForSkus(
   )) as Array<{
     id: number;
     default_code: string;
-    list_price: number;
     product_tmpl_id: [number, string] | number | false;
     categ_id: [number, string] | number | false;
   }>;
 
   if (!products.length) return [];
 
-  const basePriceByProdId = new Map<number, number>();
   const tmplIdByProdId = new Map<number, number | null>();
   const categIdByProdId = new Map<number, number | null>();
 
   for (const p of products) {
-    basePriceByProdId.set(p.id, p.list_price ?? 0);
-
     const tmplId = Array.isArray(p.product_tmpl_id)
       ? p.product_tmpl_id[0]
       : (p.product_tmpl_id as number | null);
@@ -229,7 +237,7 @@ export async function getPricesFromPricelistForSkus(
   const globalItems: Array<{ price: number }> = [];
 
   for (const item of items) {
-    if (item.compute_price !== "fixed") continue; // de momento solo precios fijos
+    if (item.compute_price !== "fixed") continue; // solo soportamos fixed por ahora
 
     const hasProduct =
       item.product_id && (Array.isArray(item.product_id) || typeof item.product_id === "number");
@@ -267,8 +275,7 @@ export async function getPricesFromPricelistForSkus(
     const tmplId = tmplIdByProdId.get(prodId) ?? null;
     const categId = categIdByProdId.get(prodId) ?? null;
 
-    // Empezamos siempre desde el list_price
-    let chosenPrice: number | null = basePriceByProdId.get(prodId) ?? 0;
+    let chosenPrice: number | null = null;
 
     // 1) Variante
     const vItem = variantItems.find((vi) => vi.product_id === prodId);
@@ -303,10 +310,13 @@ export async function getPricesFromPricelistForSkus(
       chosenPrice = globalItems[globalItems.length - 1].price;
     }
 
-    result.push({
-      default_code: p.default_code,
-      price: chosenPrice ?? 0,
-    });
+    // Solo devolvemos si encontramos alguna regla
+    if (chosenPrice != null) {
+      result.push({
+        default_code: p.default_code,
+        price: chosenPrice,
+      });
+    }
   }
 
   return result;
