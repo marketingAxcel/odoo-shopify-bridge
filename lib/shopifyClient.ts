@@ -246,3 +246,26 @@ export async function setInventoryLevel(
   return data.inventory_level;
 }
 
+/**
+ * Obtener el precio actual de la variante en Shopify para un SKU dado.
+ * NO modifica nada, solo consulta.
+ */
+export async function getVariantPriceBySku(
+  sku: string
+): Promise<number | null> {
+  const variants = await getVariantsBySku(sku);
+  if (!variants.length) return null;
+
+  // Usamos la primera variante que tenga ese SKU
+  const variantId = variants[0].id;
+
+  const data = await shopifyRequest(`variants/${variantId}.json`);
+  const priceStr = data?.variant?.price;
+
+  if (!priceStr) return null;
+
+  const priceNum = Number(priceStr);
+  if (!Number.isFinite(priceNum)) return null;
+
+  return priceNum;
+}
