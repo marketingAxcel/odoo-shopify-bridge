@@ -140,3 +140,90 @@ export async function getOdooStockBySkus(
     qty_available: (p.qty_available as number) ?? 0,
   }));
 }
+
+/**
+ * Línea de precios por producto (desde una lista de precios)
+ */
+export type OdooPriceLine = {
+  default_code: string;
+  price: number;
+};
+
+/**
+ * Obtener precios desde una lista de precios específica
+ * para una lista de SKUs (default_code).
+ *
+ * Se basa en product.pricelist.item con compute_price = 'fixed'.
+ *
+ * - pricelistId: ID de la lista de precios (ej: 625 para "Precios Full")
+ * - skus: lista de default_code (PAY...)
+ */
+export async function getPricesFromPricelistForSkus(
+  pricelistId: number,
+  skus: string[]
+): Promise<OdooPriceLine[]> {
+  if (!skus.length) return [];
+
+  // 1) Buscar productos por default_code
+  const productDomain = [["default_code", "in", skus]];
+  const productFields = ["id", "default_code"];
+
+  const products = (await odooRpc(
+    "product.product",
+    "search_read",
+    [productDomain, productFields]
+  )) as Array<{ id: number; default_code: string }>;
+
+  if (!products.length) return [];
+
+  const productIds: number[] = [];
+  const productIdBySku = new Map<string, number>();
+
+  for (const p of products) {
+    productIds.push(p.id);
+    productIdBySku.set(p.default_code, p.id);
+  }
+
+  // 2) Traer líneas de la lista de precios para esos product_id
+  const itemDomain = [
+    ["pricelist_id", "=", pricelistId],
+    ["product_id", "in", productIds],
+  ];
+  const itemFields = ["product_id", "compute_price", "fixed_price"];
+
+  const items = (await odooRpc(
+    "product.pricelist.item",
+    "search_read",
+    [itemDomain, itemFields]
+  )) as Array<{
+    product_id: [number, string] | number;
+    compute_price: string;
+    fixed_price: number;
+  }>;
+
+  const priceByProductId = new Map<number, number>();
+
+  for (const item of items) {
+    const prodId = Array.isArray(item.product_id)
+      ? item.product_id[0]
+      : item.product_id;
+
+    if (item.compute_price === "fixed") {
+      priceByProductId.set(prodId, item.fixed_price);
+    }
+  }
+
+  const result: OdooPriceLine[] = [];
+
+  for (const p of products) {
+    const price = priceByProductId.get(p.id);
+    if (price != null) {
+      result.push({
+        default_code: p.default_code,
+        price,
+      });
+    }
+  }
+
+  return result;
+}
