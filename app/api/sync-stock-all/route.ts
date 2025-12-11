@@ -6,6 +6,11 @@ import {
   setInventoryLevel,
 } from "@/lib/shopifyClient";
 
+// pequeño helper para pausar un ratico entre llamadas a Shopify
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * Recorre TODAS las llantas PAY en Odoo
  * y sincroniza su inventario hacia Shopify.
@@ -78,6 +83,9 @@ export async function POST(_req: NextRequest) {
             typeof level?.location_id === "number" ? level.location_id : null;
 
           updated++;
+
+          // 😴 Ritmo tranqui: pequeña pausa para no saturar a Shopify
+          await sleep(120); // 120 ms entre updates aprox
         } catch (err: any) {
           console.error(
             "Error actualizando inventario",

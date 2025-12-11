@@ -15,12 +15,19 @@ if (!SHOP_DOMAIN || !SHOP_TOKEN) {
   );
 }
 
+// Helper para “dormir” X ms
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * Llamada REST genérica al Admin API de Shopify
+ * Maneja 429 (rate limit) con hasta 3 reintentos.
  */
 async function shopifyRequest(
   path: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  retry = 0
 ): Promise<any> {
   const res = await fetch(`https://${SHOP_DOMAIN}/admin/api/2024-01/${path}`, {
     ...options,
@@ -30,6 +37,23 @@ async function shopifyRequest(
       ...(options.headers || {}),
     },
   });
+
+  // ⚠️ Rate limit
+  if (res.status === 429 && retry < 3) {
+    const retryAfterHeader = res.headers.get("Retry-After");
+    const retryAfterSeconds = retryAfterHeader
+      ? parseInt(retryAfterHeader, 10)
+      : 2; // por defecto 2s
+
+    const delayMs = Math.max(retryAfterSeconds, 1) * 1000;
+
+    console.warn(
+      `[ShopifyClient] 429 en ${path}, reintento ${retry + 1} en ${delayMs}ms`
+    );
+
+    await sleep(delayMs);
+    return shopifyRequest(path, options, retry + 1);
+  }
 
   if (!res.ok) {
     const text = await res.text();
@@ -65,7 +89,6 @@ type OdooProductLike = {
  * Buscar variantes en Shopify por SKU
  * (lo usamos para saber si el SKU ya existe o no)
  */
-// Busca variantes en Shopify por SKU recorriendo productos
 export async function getVariantsBySku(sku: string) {
   const matches: Array<{
     id: number;
@@ -109,14 +132,14 @@ export async function getVariantsBySku(sku: string) {
   return matches;
 }
 
-// lib/shopifyClient.ts (añadir después de getVariantsBySku)
-
 /**
  * Trae TODOS los productos de Shopify y construye
  * un mapa SKU -> inventory_item_id
  * (para no tener que preguntarle a Shopify SKU por SKU)
  */
-export async function getAllInventoryItemsBySku(): Promise<Record<string, number>> {
+export async function getAllInventoryItemsBySku(): Promise<
+  Record<string, number>
+> {
   const map: Record<string, number> = {};
   let sinceId = 0;
 
@@ -145,12 +168,11 @@ export async function getAllInventoryItemsBySku(): Promise<Record<string, number
   return map;
 }
 
-
 /**
  * Crear un producto nuevo en Shopify a partir de un producto de Odoo
  * - Crea 1 variante con SKU = default_code
- * - Precio = list_price (esto lo puedes cambiar si manejas precios en otro lado)
- * - Inventario inicial = 0 (luego se sincroniza por separado)
+ * - Precio = list_price
+ * - Inventario inicial = 0 (se sincroniza aparte)
  */
 export async function createProductFromOdoo(p: OdooProductLike) {
   const payload = {
@@ -162,7 +184,7 @@ export async function createProductFromOdoo(p: OdooProductLike) {
       variants: [
         {
           sku: p.default_code,
-          price: p.list_price.toString(), // aquí podrías poner "0" si no quieres usar el precio de Odoo
+          price: p.list_price.toString(),
           inventory_management: "shopify",
           inventory_policy: "deny",
           inventory_quantity: 0,
@@ -181,7 +203,6 @@ export async function createProductFromOdoo(p: OdooProductLike) {
 
 /**
  * Actualizar SOLO el precio de la variante cuyo SKU coincida
- * (lo usamos dentro del upsert; puedes ignorarlo si no quieres tocar precios)
  */
 export async function updateVariantPriceBySku(
   sku: string,
@@ -209,15 +230,13 @@ export async function updateVariantPriceBySku(
 
 /**
  * Upsert completo:
- * - Si el SKU ya existe en Shopify → actualiza (por ahora solo precio)
+ * - Si el SKU ya existe en Shopify → actualiza precio
  * - Si NO existe → crea producto nuevo con 1 variante
  */
 export async function upsertProductFromOdoo(p: OdooProductLike) {
   const variants = await getVariantsBySku(p.default_code);
 
   if (variants.length) {
-    // Ya existe → actualizar (si quieres, puedes desactivar esta línea
-    // para NO tocar precios y que solo sirva para saber que existe)
     await updateVariantPriceBySku(p.default_code, p.list_price);
 
     return {
@@ -227,7 +246,6 @@ export async function upsertProductFromOdoo(p: OdooProductLike) {
     };
   }
 
-  // No existe → crear producto nuevo
   const product = await createProductFromOdoo(p);
   const variant = product.variants[0];
 
@@ -240,7 +258,6 @@ export async function upsertProductFromOdoo(p: OdooProductLike) {
 
 /**
  * Obtener inventory_item_id de una variante a partir del SKU
- * (necesario para poder actualizar inventario)
  */
 export async function getInventoryItemIdBySku(
   sku: string
@@ -254,8 +271,6 @@ export async function getInventoryItemIdBySku(
  * Fijar el nivel de inventario (available) para un inventory_item_id
  * en la LOCATION_ID configurada en env.
  */
-// lib/shopifyClient.ts
-
 export async function setInventoryLevel(
   inventoryItemId: number,
   available: number
@@ -292,7 +307,6 @@ export async function getVariantPriceBySku(
   const variants = await getVariantsBySku(sku);
   if (!variants.length) return null;
 
-  // Usamos la primera variante que tenga ese SKU
   const variantId = variants[0].id;
 
   const data = await shopifyRequest(`variants/${variantId}.json`);
