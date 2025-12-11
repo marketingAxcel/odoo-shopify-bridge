@@ -141,9 +141,6 @@ export async function getOdooStockBySkus(
   }));
 }
 
-/**
- * Línea de precios por producto (desde una lista de precios)
- */
 export type OdooPriceLine = {
   default_code: string;
   price: number;
@@ -153,13 +150,12 @@ export type OdooPriceLine = {
  * Obtener precios desde una lista de precios específica
  * para una lista de SKUs (default_code).
  *
- * Soporta líneas aplicadas a:
- *  - variante (product_variant / product_id)
- *  - template (product_template / product_tmpl_id)
- *  - categoría (product_category / categ_id)
- *  - global
+ * Lógica:
+ *  - Siempre parte del list_price del producto.
+ *  - Si hay regla en la lista (producto, template, categoría o global),
+ *    sobreescribe ese precio con el fixed_price de la regla.
  *
- * Prioridad de selección:
+ * Prioridad:
  *   variante > template > categoría > global
  */
 export async function getPricesFromPricelistForSkus(
@@ -168,9 +164,9 @@ export async function getPricesFromPricelistForSkus(
 ): Promise<OdooPriceLine[]> {
   if (!skus.length) return [];
 
-  // 1) Productos por default_code
+  // 1) Productos por default_code (incluyendo list_price)
   const productDomain = [["default_code", "in", skus]];
-  const productFields = ["id", "default_code", "product_tmpl_id", "categ_id"];
+  const productFields = ["id", "default_code", "list_price", "product_tmpl_id", "categ_id"];
 
   const products = (await odooRpc(
     "product.product",
@@ -179,20 +175,19 @@ export async function getPricesFromPricelistForSkus(
   )) as Array<{
     id: number;
     default_code: string;
+    list_price: number;
     product_tmpl_id: [number, string] | number | false;
     categ_id: [number, string] | number | false;
   }>;
 
   if (!products.length) return [];
 
-  const productIds: number[] = [];
+  const basePriceByProdId = new Map<number, number>();
   const tmplIdByProdId = new Map<number, number | null>();
   const categIdByProdId = new Map<number, number | null>();
-  const productIdBySku = new Map<string, number>();
 
   for (const p of products) {
-    productIds.push(p.id);
-    productIdBySku.set(p.default_code, p.id);
+    basePriceByProdId.set(p.id, p.list_price ?? 0);
 
     const tmplId = Array.isArray(p.product_tmpl_id)
       ? p.product_tmpl_id[0]
@@ -206,10 +201,9 @@ export async function getPricesFromPricelistForSkus(
     categIdByProdId.set(p.id, categId ?? null);
   }
 
-  // 2) Traer todas las líneas de la lista de precios para esos productos / templates / categorías
+  // 2) Traer TODAS las líneas de esa lista de precios
   const itemDomain = [["pricelist_id", "=", pricelistId]];
   const itemFields = [
-    "applied_on",
     "product_id",
     "product_tmpl_id",
     "categ_id",
@@ -222,7 +216,6 @@ export async function getPricesFromPricelistForSkus(
     "search_read",
     [itemDomain, itemFields]
   )) as Array<{
-    applied_on: string; // 'product_variant' | 'product_template' | 'product_category' | 'global'
     product_id: [number, string] | number | false;
     product_tmpl_id: [number, string] | number | false;
     categ_id: [number, string] | number | false;
@@ -230,56 +223,43 @@ export async function getPricesFromPricelistForSkus(
     fixed_price: number;
   }>;
 
-  // Clasificamos las líneas por tipo
-  const variantItems: Array<{
-    product_id: number;
-    price: number;
-  }> = [];
-  const tmplItems: Array<{
-    product_tmpl_id: number;
-    price: number;
-  }> = [];
-  const categItems: Array<{
-    categ_id: number;
-    price: number;
-  }> = [];
+  const variantItems: Array<{ product_id: number; price: number }> = [];
+  const tmplItems: Array<{ product_tmpl_id: number; price: number }> = [];
+  const categItems: Array<{ categ_id: number; price: number }> = [];
   const globalItems: Array<{ price: number }> = [];
 
   for (const item of items) {
-    if (item.compute_price !== "fixed") {
-      continue; // por ahora solo soportamos precio fijo
-    }
+    if (item.compute_price !== "fixed") continue; // de momento solo precios fijos
 
-    if (item.applied_on === "product_variant" && item.product_id) {
+    const hasProduct =
+      item.product_id && (Array.isArray(item.product_id) || typeof item.product_id === "number");
+    const hasTemplate =
+      item.product_tmpl_id &&
+      (Array.isArray(item.product_tmpl_id) || typeof item.product_tmpl_id === "number");
+    const hasCategory =
+      item.categ_id && (Array.isArray(item.categ_id) || typeof item.categ_id === "number");
+
+    if (hasProduct) {
       const pid = Array.isArray(item.product_id)
         ? item.product_id[0]
         : (item.product_id as number);
-      variantItems.push({
-        product_id: pid,
-        price: item.fixed_price,
-      });
-    } else if (item.applied_on === "product_template" && item.product_tmpl_id) {
+      variantItems.push({ product_id: pid, price: item.fixed_price });
+    } else if (hasTemplate) {
       const tid = Array.isArray(item.product_tmpl_id)
         ? item.product_tmpl_id[0]
         : (item.product_tmpl_id as number);
-      tmplItems.push({
-        product_tmpl_id: tid,
-        price: item.fixed_price,
-      });
-    } else if (item.applied_on === "product_category" && item.categ_id) {
+      tmplItems.push({ product_tmpl_id: tid, price: item.fixed_price });
+    } else if (hasCategory) {
       const cid = Array.isArray(item.categ_id)
         ? item.categ_id[0]
         : (item.categ_id as number);
-      categItems.push({
-        categ_id: cid,
-        price: item.fixed_price,
-      });
-    } else if (item.applied_on === "global") {
+      categItems.push({ categ_id: cid, price: item.fixed_price });
+    } else {
+      // Sin producto, ni template, ni categoría → global
       globalItems.push({ price: item.fixed_price });
     }
   }
 
-  // 3) Para cada producto, elegimos el precio más específico disponible
   const result: OdooPriceLine[] = [];
 
   for (const p of products) {
@@ -287,31 +267,32 @@ export async function getPricesFromPricelistForSkus(
     const tmplId = tmplIdByProdId.get(prodId) ?? null;
     const categId = categIdByProdId.get(prodId) ?? null;
 
-    let chosenPrice: number | null = null;
+    // Empezamos siempre desde el list_price
+    let chosenPrice: number | null = basePriceByProdId.get(prodId) ?? 0;
 
-    // 3.1. Variante
+    // 1) Variante
     const vItem = variantItems.find((vi) => vi.product_id === prodId);
     if (vItem) {
       chosenPrice = vItem.price;
     } else if (tmplId != null) {
-      // 3.2. Template
+      // 2) Template
       const tItem = tmplItems.find((ti) => ti.product_tmpl_id === tmplId);
       if (tItem) {
         chosenPrice = tItem.price;
       } else if (categId != null) {
-        // 3.3. Categoría
+        // 3) Categoría
         const cItem = categItems.find((ci) => ci.categ_id === categId);
         if (cItem) {
           chosenPrice = cItem.price;
         } else if (globalItems.length) {
-          // 3.4. Global (tomamos la última, normalmente es la más reciente)
+          // 4) Global
           chosenPrice = globalItems[globalItems.length - 1].price;
         }
       } else if (globalItems.length) {
         chosenPrice = globalItems[globalItems.length - 1].price;
       }
     } else if (categId != null) {
-      // No hay template pero hay categoría
+      // No hay template pero sí categoría
       const cItem = categItems.find((ci) => ci.categ_id === categId);
       if (cItem) {
         chosenPrice = cItem.price;
@@ -322,12 +303,10 @@ export async function getPricesFromPricelistForSkus(
       chosenPrice = globalItems[globalItems.length - 1].price;
     }
 
-    if (chosenPrice != null) {
-      result.push({
-        default_code: p.default_code,
-        price: chosenPrice,
-      });
-    }
+    result.push({
+      default_code: p.default_code,
+      price: chosenPrice ?? 0,
+    });
   }
 
   return result;
