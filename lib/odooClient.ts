@@ -153,10 +153,14 @@ export type OdooPriceLine = {
  * Obtener precios desde una lista de precios específica
  * para una lista de SKUs (default_code).
  *
- * Se basa en product.pricelist.item con compute_price = 'fixed'.
+ * Soporta líneas aplicadas a:
+ *  - variante (product_variant / product_id)
+ *  - template (product_template / product_tmpl_id)
+ *  - categoría (product_category / categ_id)
+ *  - global
  *
- * - pricelistId: ID de la lista de precios (ej: 625 para "Precios Full")
- * - skus: lista de default_code (PAY...)
+ * Prioridad de selección:
+ *   variante > template > categoría > global
  */
 export async function getPricesFromPricelistForSkus(
   pricelistId: number,
@@ -164,63 +168,164 @@ export async function getPricesFromPricelistForSkus(
 ): Promise<OdooPriceLine[]> {
   if (!skus.length) return [];
 
-  // 1) Buscar productos por default_code
+  // 1) Productos por default_code
   const productDomain = [["default_code", "in", skus]];
-  const productFields = ["id", "default_code"];
+  const productFields = ["id", "default_code", "product_tmpl_id", "categ_id"];
 
   const products = (await odooRpc(
     "product.product",
     "search_read",
     [productDomain, productFields]
-  )) as Array<{ id: number; default_code: string }>;
+  )) as Array<{
+    id: number;
+    default_code: string;
+    product_tmpl_id: [number, string] | number | false;
+    categ_id: [number, string] | number | false;
+  }>;
 
   if (!products.length) return [];
 
   const productIds: number[] = [];
+  const tmplIdByProdId = new Map<number, number | null>();
+  const categIdByProdId = new Map<number, number | null>();
   const productIdBySku = new Map<string, number>();
 
   for (const p of products) {
     productIds.push(p.id);
     productIdBySku.set(p.default_code, p.id);
+
+    const tmplId = Array.isArray(p.product_tmpl_id)
+      ? p.product_tmpl_id[0]
+      : (p.product_tmpl_id as number | null);
+
+    const categId = Array.isArray(p.categ_id)
+      ? p.categ_id[0]
+      : (p.categ_id as number | null);
+
+    tmplIdByProdId.set(p.id, tmplId ?? null);
+    categIdByProdId.set(p.id, categId ?? null);
   }
 
-  // 2) Traer líneas de la lista de precios para esos product_id
-  const itemDomain = [
-    ["pricelist_id", "=", pricelistId],
-    ["product_id", "in", productIds],
+  // 2) Traer todas las líneas de la lista de precios para esos productos / templates / categorías
+  const itemDomain = [["pricelist_id", "=", pricelistId]];
+  const itemFields = [
+    "applied_on",
+    "product_id",
+    "product_tmpl_id",
+    "categ_id",
+    "compute_price",
+    "fixed_price",
   ];
-  const itemFields = ["product_id", "compute_price", "fixed_price"];
 
   const items = (await odooRpc(
     "product.pricelist.item",
     "search_read",
     [itemDomain, itemFields]
   )) as Array<{
-    product_id: [number, string] | number;
+    applied_on: string; // 'product_variant' | 'product_template' | 'product_category' | 'global'
+    product_id: [number, string] | number | false;
+    product_tmpl_id: [number, string] | number | false;
+    categ_id: [number, string] | number | false;
     compute_price: string;
     fixed_price: number;
   }>;
 
-  const priceByProductId = new Map<number, number>();
+  // Clasificamos las líneas por tipo
+  const variantItems: Array<{
+    product_id: number;
+    price: number;
+  }> = [];
+  const tmplItems: Array<{
+    product_tmpl_id: number;
+    price: number;
+  }> = [];
+  const categItems: Array<{
+    categ_id: number;
+    price: number;
+  }> = [];
+  const globalItems: Array<{ price: number }> = [];
 
   for (const item of items) {
-    const prodId = Array.isArray(item.product_id)
-      ? item.product_id[0]
-      : item.product_id;
+    if (item.compute_price !== "fixed") {
+      continue; // por ahora solo soportamos precio fijo
+    }
 
-    if (item.compute_price === "fixed") {
-      priceByProductId.set(prodId, item.fixed_price);
+    if (item.applied_on === "product_variant" && item.product_id) {
+      const pid = Array.isArray(item.product_id)
+        ? item.product_id[0]
+        : (item.product_id as number);
+      variantItems.push({
+        product_id: pid,
+        price: item.fixed_price,
+      });
+    } else if (item.applied_on === "product_template" && item.product_tmpl_id) {
+      const tid = Array.isArray(item.product_tmpl_id)
+        ? item.product_tmpl_id[0]
+        : (item.product_tmpl_id as number);
+      tmplItems.push({
+        product_tmpl_id: tid,
+        price: item.fixed_price,
+      });
+    } else if (item.applied_on === "product_category" && item.categ_id) {
+      const cid = Array.isArray(item.categ_id)
+        ? item.categ_id[0]
+        : (item.categ_id as number);
+      categItems.push({
+        categ_id: cid,
+        price: item.fixed_price,
+      });
+    } else if (item.applied_on === "global") {
+      globalItems.push({ price: item.fixed_price });
     }
   }
 
+  // 3) Para cada producto, elegimos el precio más específico disponible
   const result: OdooPriceLine[] = [];
 
   for (const p of products) {
-    const price = priceByProductId.get(p.id);
-    if (price != null) {
+    const prodId = p.id;
+    const tmplId = tmplIdByProdId.get(prodId) ?? null;
+    const categId = categIdByProdId.get(prodId) ?? null;
+
+    let chosenPrice: number | null = null;
+
+    // 3.1. Variante
+    const vItem = variantItems.find((vi) => vi.product_id === prodId);
+    if (vItem) {
+      chosenPrice = vItem.price;
+    } else if (tmplId != null) {
+      // 3.2. Template
+      const tItem = tmplItems.find((ti) => ti.product_tmpl_id === tmplId);
+      if (tItem) {
+        chosenPrice = tItem.price;
+      } else if (categId != null) {
+        // 3.3. Categoría
+        const cItem = categItems.find((ci) => ci.categ_id === categId);
+        if (cItem) {
+          chosenPrice = cItem.price;
+        } else if (globalItems.length) {
+          // 3.4. Global (tomamos la última, normalmente es la más reciente)
+          chosenPrice = globalItems[globalItems.length - 1].price;
+        }
+      } else if (globalItems.length) {
+        chosenPrice = globalItems[globalItems.length - 1].price;
+      }
+    } else if (categId != null) {
+      // No hay template pero hay categoría
+      const cItem = categItems.find((ci) => ci.categ_id === categId);
+      if (cItem) {
+        chosenPrice = cItem.price;
+      } else if (globalItems.length) {
+        chosenPrice = globalItems[globalItems.length - 1].price;
+      }
+    } else if (globalItems.length) {
+      chosenPrice = globalItems[globalItems.length - 1].price;
+    }
+
+    if (chosenPrice != null) {
       result.push({
         default_code: p.default_code,
-        price,
+        price: chosenPrice,
       });
     }
   }
