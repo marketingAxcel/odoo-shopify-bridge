@@ -151,11 +151,6 @@ export async function getOdooStockBySkus(
   }));
 }
 
-/**
- * Línea de precio por producto (usada para sync de precios)
- * product_id: ID de product.product
- * price: precio fijo tomado de la lista de precios configurada
- */
 export type OdooPriceLine = {
   product_id: number;
   price: number;
