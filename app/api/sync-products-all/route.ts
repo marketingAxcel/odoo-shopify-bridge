@@ -13,7 +13,7 @@ import {
 } from "@/lib/shopifyClient";
 
 // 👇 Ajusta este ID si tu lista PRECIOFULL tiene otro ID en Odoo
-const PRECIOFULL_ID = 1;
+const PRECIOFULL_ID = 625;
 
 /**
  * Sincroniza productos PAY de Odoo a Shopify por "bloques" (paginado),
