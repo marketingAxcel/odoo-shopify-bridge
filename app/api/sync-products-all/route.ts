@@ -68,7 +68,7 @@ export async function POST(req: NextRequest) {
       .map((p) => p.default_code)
       .filter((sku) => !!sku);
 
-    // 2) Precios desde la lista PRECIOFULL + stock desde Odoo
+    // 2) Precios desde PRECIOFULL + stock desde Odoo (stock solo informativo aquí)
     const [priceLines, stockLines] = await Promise.all([
       getPricesFromPricelistForSkus(PRECIOFULL_ID, skus),
       getOdooStockBySkus(skus),
@@ -118,29 +118,29 @@ export async function POST(req: NextRequest) {
     for (const p of odooProducts) {
       const sku = p.default_code;
 
-      // Precio desde PRECIOFULL si existe, si no desde list_price
-      const odooPriceFromList = priceBySku.get(sku) ?? null;
-      const odooPrice =
-        odooPriceFromList ??
-        (typeof p.list_price === "number" ? p.list_price : null);
+      // 🔹 Precio SOLO desde la lista PRECIOFULL
+      const priceFromPricelist = priceBySku.get(sku) ?? null;
+      const hasPriceInPricelist = priceFromPricelist !== null;
 
-      // Stock desde Odoo
+      // 🔹 Stock desde Odoo (solo para el log)
       const stockLine = stockBySku.get(sku);
       const odooQty = stockLine?.qty_available ?? 0;
 
-      // 🔹 REGLA NUEVA:
-      // Precio "malo" = null, 0 o 1 → siempre borrador
-      // Precio válido (> 1) → activo (tenga o no stock)
-      const badPrice = !odooPrice || odooPrice <= 1;
-      const productStatus: ShopifyProductStatus = badPrice
-        ? "draft"
-        : "active";
+      // 🔹 Regla:
+      //   - Si el SKU aparece en PRECIOFULL → active
+      //   - Si NO aparece → draft (sin importar stock ni list_price)
+      const productStatus: ShopifyProductStatus = hasPriceInPricelist
+        ? "active"
+        : "draft";
+
+      const odooPrice = priceFromPricelist; // solo reportamos el de PRECIOFULL
 
       try {
-        // Forzamos que el precio que mandamos a Shopify sea el que calculamos
+        // Al mandar a Shopify, usamos el precio de PRECIOFULL si existe,
+        // si no, mandamos 0 (pero se queda en draft).
         const odooProductForShopify = {
           ...p,
-          list_price: odooPrice ?? 0, // si es null, mandamos 0 (queda en draft)
+          list_price: odooPrice ?? 0,
         };
 
         const result = await upsertProductFromOdoo(
