@@ -1,12 +1,8 @@
 {
   "crons": [
     {
-      "path": "/api/sync-stock-all",
+      "path": "/api/sync-both",
       "schedule": "0 11,17,23,5 * * *"
-    },
-    {
-      "path": "/api/sync-prices-all",
-      "schedule": "5 11,17,23,5 * * *"
     }
   ]
 }
