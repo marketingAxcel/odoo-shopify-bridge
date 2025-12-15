@@ -16,7 +16,7 @@ if (!SHOP_DOMAIN || !SHOP_TOKEN) {
 }
 
 // 👉 Tipo para el estado del producto en Shopify
-type ShopifyProductStatus = "active" | "draft" | "archived";
+export type ShopifyProductStatus = "active" | "draft" | "archived";
 
 // Helper para “dormir” X ms
 function sleep(ms: number) {
@@ -238,9 +238,31 @@ export async function updateVariantPriceBySku(
 }
 
 /**
+ * Actualizar el status (active/draft/archived) de un producto
+ */
+export async function updateProductStatus(
+  productId: number,
+  status: ShopifyProductStatus
+) {
+  const payload = {
+    product: {
+      id: productId,
+      status,
+    },
+  };
+
+  const data = await shopifyRequest(`products/${productId}.json`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+
+  return data.product;
+}
+
+/**
  * Upsert completo:
- * - Si el SKU ya existe en Shopify → actualiza precio
- * - Si NO existe → crea producto nuevo con 1 variante
+ * - Si el SKU ya existe en Shopify → actualiza precio y status
+ * - Si NO existe → crea producto nuevo con 1 variante usando el status indicado
  *
  * 🔹 productStatus es opcional:
  *    - por defecto "active"
@@ -254,12 +276,16 @@ export async function upsertProductFromOdoo(
   const variants = await getVariantsBySku(p.default_code);
 
   if (variants.length) {
-    // Ya existe → solo tocamos precio (no cambiamos status aquí)
+    // Ya existe → actualizamos precio
     await updateVariantPriceBySku(p.default_code, p.list_price);
+
+    // Y actualizamos también el status del producto según Odoo
+    const productId = variants[0].product_id;
+    await updateProductStatus(productId, productStatus);
 
     return {
       mode: "updated" as const,
-      product_id: variants[0].product_id,
+      product_id: productId,
       variant_id: variants[0].id,
     };
   }
