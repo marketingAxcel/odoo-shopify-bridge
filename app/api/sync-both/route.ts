@@ -2,75 +2,102 @@
 import { NextRequest } from "next/server";
 
 /**
- * Orquesta:
- *  - /api/sync-stock-all      → sincroniza inventario de todas las llantas
- *  - /api/sync-prices-all     → sincroniza precios de todas las llantas
- *  - /api/sync-products-all   → sincroniza productos (paginado 50 en 50)
+ * Ruta “maestra”:
+ * 1) Sincroniza stock
+ * 2) Sincroniza precios
+ * 3) Recorre TODOS los productos en batches (paginado) y hace upsert
  *
- * Lo usan tus 4 crons externos en cron-job.org
- *   POST https://odoo-shopify-bridge.vercel.app/api/sync-both
+ * Uso:
+ *   POST /api/sync-both
  */
 export async function POST(_req: NextRequest) {
   try {
-    // Base URL (en Vercel usa VERCEL_URL, en local usa localhost)
-    const baseUrl = process.env.VERCEL_URL
-      ? `https://${process.env.VERCEL_URL}`
-      : "http://localhost:3000";
+    // 🟢 IMPORTANTE:
+    // En producción usamos SIEMPRE el dominio público (sin protección SSO)
+    // En local usamos localhost
+    const baseUrl =
+      process.env.NODE_ENV === "production"
+        ? "https://odoo-shopify-bridge.vercel.app"
+        : "http://localhost:3000";
 
-    // 1) STOCK
+    // 1) Stock
     const stockRes = await fetch(`${baseUrl}/api/sync-stock-all`, {
       method: "POST",
     });
-
     const stockJson = await stockRes.json().catch(() => null);
 
-    // 2) PRECIOS
+    if (!stockRes.ok) {
+      return new Response(
+        JSON.stringify({
+          ok: false,
+          step: "stock",
+          status: stockRes.status,
+          body: stockJson,
+        }),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    // 2) Precios
     const pricesRes = await fetch(`${baseUrl}/api/sync-prices-all`, {
       method: "POST",
     });
-
     const pricesJson = await pricesRes.json().catch(() => null);
 
-    // 3) PRODUCTOS (paginado)
-    const limit = 50;
+    if (!pricesRes.ok) {
+      return new Response(
+        JSON.stringify({
+          ok: false,
+          step: "prices",
+          status: pricesRes.status,
+          body: pricesJson,
+        }),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    // 3) Productos en batches (paginado)
+    const LIMIT = 50;
     let offset = 0;
     const productBatches: any[] = [];
 
     while (true) {
-      const url = `${baseUrl}/api/sync-products-all?limit=${limit}&offset=${offset}`;
-
+      const url = `${baseUrl}/api/sync-products-all?limit=${LIMIT}&offset=${offset}`;
       const res = await fetch(url, { method: "POST" });
 
+      const json: any = await res.json().catch(() => null);
+
       if (!res.ok) {
-        const text = await res.text().catch(() => "");
+        const snippet =
+          typeof json === "string"
+            ? json.slice(0, 400)
+            : JSON.stringify(json).slice(0, 400);
+
         throw new Error(
-          `sync-products-all falló en offset=${offset}: ${res.status} ${text}`
+          `sync-products-all falló en offset=${offset}: ${res.status} ${snippet}`
         );
       }
 
-      const json = await res.json().catch(() => null);
       productBatches.push(json);
 
       const nextOffset = json?.next_offset;
-
-      // Si no hay siguiente página, terminamos
-      if (nextOffset == null) {
-        break;
-      }
+      if (nextOffset == null) break; // ya no hay más páginas
 
       offset = nextOffset;
-
-      // Freno de seguridad por si acaso
-      if (offset > 5000) break;
+      if (offset > 5000) break; // freno de seguridad
     }
 
     return new Response(
       JSON.stringify({
         ok: true,
-        stock_status: stockRes.status,
-        prices_status: pricesRes.status,
-        stock_body: stockJson,
-        prices_body: pricesJson,
+        stock: stockJson,
+        prices: pricesJson,
         product_batches: productBatches,
       }),
       {
@@ -79,7 +106,7 @@ export async function POST(_req: NextRequest) {
       }
     );
   } catch (err: any) {
-    console.error("Error interno en /api/sync-both:", err);
+    console.error("Error en /api/sync-both:", err);
     return new Response(
       JSON.stringify({
         ok: false,
