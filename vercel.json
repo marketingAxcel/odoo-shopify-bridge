@@ -1,0 +1,39 @@
+{
+  "crons": [
+    {
+      "path": "/api/sync-stock-all",
+      "schedule": "0 5 * * *"
+    },
+    {
+      "path": "/api/sync-prices-all",
+      "schedule": "5 5 * * *"
+    },
+
+    {
+      "path": "/api/sync-stock-all",
+      "schedule": "0 11 * * *"
+    },
+    {
+      "path": "/api/sync-prices-all",
+      "schedule": "5 11 * * *"
+    },
+
+    {
+      "path": "/api/sync-stock-all",
+      "schedule": "0 17 * * *"
+    },
+    {
+      "path": "/api/sync-prices-all",
+      "schedule": "5 17 * * *"
+    },
+
+    {
+      "path": "/api/sync-stock-all",
+      "schedule": "0 23 * * *"
+    },
+    {
+      "path": "/api/sync-prices-all",
+      "schedule": "5 23 * * *"
+    }
+  ]
+}
