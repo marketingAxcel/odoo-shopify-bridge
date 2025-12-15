@@ -7,139 +7,172 @@ import {
 } from "@/lib/odooClient";
 import { upsertProductFromOdoo } from "@/lib/shopifyClient";
 
-// ID de la lista de precios FULL (PRECIOFULL) desde el .env
-// ODOO_PRICELIST_FULL_ID=625
-const PRICELIST_FULL_ID = Number(process.env.ODOO_PRICELIST_FULL_ID || "0");
+// ID de la lista de precios FULL (PRECIOFULL)
+// Lo ideal es tenerlo en el .env como ODOO_PRICELIST_ID=625
+const PRECIOFULL_ID = Number(process.env.ODOO_PRICELIST_ID || "625");
 
 /**
- * Recorre TODO el catálogo de llantas PAY en Odoo
- * y hace upsert en Shopify (crear/actualizar sin duplicar),
- * decidiendo ACTIVE/DRAFT según stock + precio.
+ * Sincroniza UNA PÁGINA de productos PAY desde Odoo hacia Shopify.
  *
- * Uso:
- *   POST /api/sync-products-all
+ * Uso (POST):
+ *   /api/sync-products-all
+ *   /api/sync-products-all?offset=0&limit=50
+ *   /api/sync-products-all?offset=50&limit=50
+ *   /api/sync-products-all?offset=100&limit=50
  */
-export async function POST(_req: NextRequest) {
+export async function POST(req: NextRequest) {
   try {
-    const PAGE_SIZE = 50;
-    let offset = 0;
+    const { searchParams } = new URL(req.url);
+
+    // Puedes controlar cuántos productos procesa por llamada
+    const limitParam = searchParams.get("limit");
+    const offsetParam = searchParams.get("offset");
+
+    const limit = limitParam ? Math.min(parseInt(limitParam, 10) || 50, 100) : 50;
+    const offset = offsetParam ? parseInt(offsetParam, 10) || 0 : 0;
+
+    // 1) Traemos UNA PÁGINA de productos desde Odoo
+    const odooProducts = await getOdooProductsPage(limit, offset);
+
+    if (!odooProducts.length) {
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          message: "Sin productos en este rango",
+          limit,
+          offset,
+          total_processed: 0,
+          created_count: 0,
+          updated_count: 0,
+          created: [],
+          updated: [],
+          errors: [],
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    const skus = odooProducts.map((p) => p.default_code);
+
+    // 2) Stock por SKU en Odoo
+    const stockLines = await getOdooStockBySkus(skus);
+    const stockBySku = new Map<string, number>(
+      stockLines.map((l) => [l.default_code, l.qty_available])
+    );
+
+    // 3) Precios desde PRECIOFULL por SKU
+    const priceLines = await getPricesFromPricelistForSkus(PRECIOFULL_ID, skus);
+    const priceBySku = new Map<string, number>(
+      priceLines.map((pl) => [pl.default_code, pl.price])
+    );
 
     const created: Array<{
       odoo_id: number;
       shopify_product_id: number;
       sku: string;
-      status: "active" | "draft";
+      product_status: "active" | "draft";
+      odoo_price: number | null;
+      odoo_qty: number;
     }> = [];
 
     const updated: Array<{
       odoo_id: number;
       shopify_product_id: number;
       sku: string;
-      status: "active" | "draft";
+      product_status: "active" | "draft";
+      odoo_price: number | null;
+      odoo_qty: number;
     }> = [];
 
     const errors: Array<{
       odoo_id: number;
       sku: string;
+      product_status: "active" | "draft";
+      odoo_price: number | null;
+      odoo_qty: number;
       message: string;
     }> = [];
 
-    while (true) {
-      const odooProducts = await getOdooProductsPage(PAGE_SIZE, offset);
-      if (!odooProducts.length) break;
+    // 4) Recorremos SOLO esta página de productos
+    for (const p of odooProducts) {
+      const sku = p.default_code;
+      const stockQty = stockBySku.get(sku) ?? 0;
+      const pricelistPrice = priceBySku.get(sku);
 
-      const skus = odooProducts
-        .map((p) => p.default_code)
-        .filter((s) => !!s);
+      // --- Lógica de precio efectivo ---
+      // 1) Si hay regla en PRECIOFULL → usamos ese precio
+      // 2) Si NO hay regla, pero list_price > 1 → usamos list_price
+      // 3) Si list_price es 0 o 1 → consideramos que NO tiene precio real
+      let effectivePrice: number | null = null;
 
-      // 1) Stock por SKU
-      const stockLines = await getOdooStockBySkus(skus);
-      const stockMap = new Map<string, number>();
-      for (const line of stockLines) {
-        stockMap.set(line.default_code, line.qty_available);
+      if (typeof pricelistPrice === "number") {
+        effectivePrice = pricelistPrice;
+      } else if (p.list_price && p.list_price > 1) {
+        effectivePrice = p.list_price;
+      } else {
+        effectivePrice = null; // sin precio útil
       }
 
-      // 2) Precios por SKU desde PRECIOFULL (si está configurado)
-      const priceMap = new Map<string, number>();
-      if (PRICELIST_FULL_ID) {
-        const priceLines = await getPricesFromPricelistForSkus(
-          PRICELIST_FULL_ID,
-          skus
+      const hasPrice = effectivePrice !== null && effectivePrice > 1;
+      const hasStock = stockQty > 0;
+
+      // Si NO tiene precio y NO tiene stock → lo mandamos como borrador
+      // Si tiene precio o stock → activo
+      const productStatus: "active" | "draft" =
+        hasPrice || hasStock ? "active" : "draft";
+
+      // Construimos el objeto con el precio que realmente queremos en Shopify
+      const productForShopify = {
+        ...p,
+        list_price: effectivePrice ?? 0,
+      };
+
+      try {
+        const result = await upsertProductFromOdoo(
+          productForShopify as any,
+          productStatus
         );
-        for (const pl of priceLines) {
-          priceMap.set(pl.default_code, pl.price);
-        }
-      }
 
-      // 3) Recorrer productos y decidir status
-      for (const p of odooProducts) {
-        const sku = p.default_code;
-        const qty = stockMap.get(sku) ?? 0;
-
-        // --- PRECIO EFECTIVO ---
-        // 1) PRECIOFULL si existe
-        // 2) si no, list_price
-        let effectivePrice: number | null = null;
-
-        const priceFromFull = priceMap.get(sku);
-        if (typeof priceFromFull === "number") {
-          effectivePrice = priceFromFull;
-        } else if (typeof p.list_price === "number") {
-          effectivePrice = p.list_price;
-        }
-
-        // Lo consideramos "precio real" solo si es > 1 (ignoramos 0 y 1)
-        const hasRealPrice =
-          typeof effectivePrice === "number" && effectivePrice > 1;
-
-        // --- LÓGICA DE STATUS ---
-        // Si NO tiene precio real (null, 0 o 1) Y qty <= 0 → DRAFT
-        // En cualquier otro caso → ACTIVE
-        const status: "active" | "draft" =
-          !hasRealPrice && qty <= 0 ? "draft" : "active";
-
-        // Para enviar a Shopify usamos el effectivePrice si existe,
-        // si no, dejamos el list_price que venga de Odoo
-        const productForShopify = {
-          ...p,
-          list_price: effectivePrice ?? p.list_price ?? 0,
+        const baseItem = {
+          odoo_id: p.id,
+          shopify_product_id: result.product_id,
+          sku,
+          product_status: productStatus,
+          odoo_price: effectivePrice,
+          odoo_qty: stockQty,
         };
 
-        try {
-          const result = await upsertProductFromOdoo(
-            productForShopify,
-            status
-          );
-
-          const baseItem = {
-            odoo_id: p.id,
-            shopify_product_id: result.product_id,
-            sku,
-            status,
-          };
-
-          if (result.mode === "created") {
-            created.push(baseItem);
-          } else {
-            updated.push(baseItem);
-          }
-        } catch (err: any) {
-          console.error("Error upsert producto Shopify", p.default_code, err);
-          errors.push({
-            odoo_id: p.id,
-            sku: p.default_code,
-            message: err?.message || "Error desconocido",
-          });
+        if (result.mode === "created") {
+          created.push(baseItem);
+        } else {
+          updated.push(baseItem);
         }
+      } catch (err: any) {
+        console.error("Error upsert producto Shopify", sku, err);
+        errors.push({
+          odoo_id: p.id,
+          sku,
+          product_status: productStatus,
+          odoo_price: effectivePrice,
+          odoo_qty: stockQty,
+          message: err?.message || "Error desconocido",
+        });
       }
-
-      offset += PAGE_SIZE;
-      if (offset > 5000) break; // freno de seguridad
     }
+
+    // Para saber cuál sería el siguiente offset
+    const nextOffset = offset + odooProducts.length;
 
     return new Response(
       JSON.stringify({
         ok: true,
+        limit,
+        offset,
+        next_offset: nextOffset,
+        total_processed: odooProducts.length,
         created_count: created.length,
         updated_count: updated.length,
         created,
@@ -152,7 +185,7 @@ export async function POST(_req: NextRequest) {
       }
     );
   } catch (err: any) {
-    console.error("Error en sync-products-all:", err);
+    console.error("Error en sync-products-all (paginado):", err);
     return new Response(
       JSON.stringify({ error: err?.message || "Error interno" }),
       {
