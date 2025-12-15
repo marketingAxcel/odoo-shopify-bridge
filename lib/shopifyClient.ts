@@ -15,6 +15,9 @@ if (!SHOP_DOMAIN || !SHOP_TOKEN) {
   );
 }
 
+// 👉 Tipo para el estado del producto en Shopify
+type ShopifyProductStatus = "active" | "draft" | "archived";
+
 // Helper para “dormir” X ms
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -173,14 +176,20 @@ export async function getAllInventoryItemsBySku(): Promise<
  * - Crea 1 variante con SKU = default_code
  * - Precio = list_price
  * - Inventario inicial = 0 (se sincroniza aparte)
+ *
+ * 🔹 productStatus: "active" por defecto, pero puedes pasar "draft"
+ *    cuando no tenga precio ni inventario.
  */
-export async function createProductFromOdoo(p: OdooProductLike) {
+export async function createProductFromOdoo(
+  p: OdooProductLike,
+  productStatus: ShopifyProductStatus = "active"
+) {
   const payload = {
     product: {
       title: p.name,
       body_html: p.description_sale || "",
       vendor: "Paytton Tires",
-      status: "active",
+      status: productStatus,
       variants: [
         {
           sku: p.default_code,
@@ -232,11 +241,20 @@ export async function updateVariantPriceBySku(
  * Upsert completo:
  * - Si el SKU ya existe en Shopify → actualiza precio
  * - Si NO existe → crea producto nuevo con 1 variante
+ *
+ * 🔹 productStatus es opcional:
+ *    - por defecto "active"
+ *    - pero desde tu ruta puedes llamar upsertProductFromOdoo(p, "draft")
+ *      si en Odoo no tiene precio ni inventario.
  */
-export async function upsertProductFromOdoo(p: OdooProductLike) {
+export async function upsertProductFromOdoo(
+  p: OdooProductLike,
+  productStatus: ShopifyProductStatus = "active"
+) {
   const variants = await getVariantsBySku(p.default_code);
 
   if (variants.length) {
+    // Ya existe → solo tocamos precio (no cambiamos status aquí)
     await updateVariantPriceBySku(p.default_code, p.list_price);
 
     return {
@@ -246,7 +264,8 @@ export async function upsertProductFromOdoo(p: OdooProductLike) {
     };
   }
 
-  const product = await createProductFromOdoo(p);
+  // No existe → lo creamos con el estado indicado
+  const product = await createProductFromOdoo(p, productStatus);
   const variant = product.variants[0];
 
   return {
