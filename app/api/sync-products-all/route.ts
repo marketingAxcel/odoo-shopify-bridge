@@ -2,19 +2,28 @@
 import { NextRequest } from "next/server";
 import {
   getOdooProductsPage,
-  getOdooStockBySkus,
   getPricesFromPricelistForSkus,
 } from "@/lib/odooClient";
-import { upsertProductFromOdoo } from "@/lib/shopifyClient";
-
-// Tipo local para el status de producto en Shopify
-type ShopifyProductStatus = "active" | "draft" | "archived";
+import {
+  createProductFromOdoo,
+  getVariantsBySku,
+  updateProductStatus,
+  ShopifyProductStatus,
+  OdooProductLike,
+} from "@/lib/shopifyClient";
 
 // 👇 Ajusta este ID si tu lista PRECIOFULL tiene otro ID en Odoo
 const PRECIOFULL_ID = 1;
 
 /**
- * Sincroniza productos PAY de Odoo a Shopify, por "bloques" (paginado).
+ * Sincroniza productos PAY de Odoo a Shopify por "bloques" (paginado),
+ * SOLO para:
+ *   - crear los productos que falten en Shopify
+ *   - asegurar que el status sea:
+ *       * "active" si el SKU está en PRECIOFULL
+ *       * "draft"  si NO está en PRECIOFULL
+ *
+ * NO toca precios ni inventario de productos ya existentes.
  *
  * Uso desde Postman / cron:
  *   POST /api/sync-products-all?limit=50&offset=0
@@ -68,23 +77,12 @@ export async function POST(req: NextRequest) {
       .map((p) => p.default_code)
       .filter((sku) => !!sku);
 
-    // 2) Precios desde PRECIOFULL + stock desde Odoo (stock solo informativo aquí)
-    const [priceLines, stockLines] = await Promise.all([
-      getPricesFromPricelistForSkus(PRECIOFULL_ID, skus),
-      getOdooStockBySkus(skus),
-    ]);
+    // 2) Precios desde PRECIOFULL (solo para saber quién pertenece a la lista)
+    const priceLines = await getPricesFromPricelistForSkus(PRECIOFULL_ID, skus);
 
-    // Mapas auxiliares
     const priceBySku = new Map<string, number>();
     for (const line of priceLines) {
       priceBySku.set(line.default_code, line.price);
-    }
-
-    const stockBySku = new Map<string, { qty_available: number }>();
-    for (const line of stockLines) {
-      stockBySku.set(line.default_code, {
-        qty_available: line.qty_available,
-      });
     }
 
     const created: Array<{
@@ -93,7 +91,6 @@ export async function POST(req: NextRequest) {
       sku: string;
       product_status: ShopifyProductStatus;
       odoo_price: number | null;
-      odoo_qty: number;
     }> = [];
 
     const updated: Array<{
@@ -102,74 +99,76 @@ export async function POST(req: NextRequest) {
       sku: string;
       product_status: ShopifyProductStatus;
       odoo_price: number | null;
-      odoo_qty: number;
     }> = [];
 
     const errors: Array<{
       odoo_id: number;
       sku: string;
-      product_status: ShopifyProductStatus;
+      desired_status: ShopifyProductStatus;
       odoo_price: number | null;
-      odoo_qty: number;
       message: string;
     }> = [];
 
     // 3) Procesar cada producto de esta página
-    for (const p of odooProducts) {
+    for (const p of odooProducts as OdooProductLike[]) {
       const sku = p.default_code;
 
-      // 🔹 Precio SOLO desde la lista PRECIOFULL
-      const priceFromPricelist = priceBySku.get(sku) ?? null;
-      const hasPriceInPricelist = priceFromPricelist !== null;
-
-      // 🔹 Stock desde Odoo (solo para el log)
-      const stockLine = stockBySku.get(sku);
-      const odooQty = stockLine?.qty_available ?? 0;
+      // 🔹 ¿Tiene precio en la lista PRECIOFULL?
+      const priceFromPricelist = priceBySku.get(sku);
+      const hasPriceInPricelist =
+        priceFromPricelist !== null && priceFromPricelist !== undefined;
 
       // 🔹 Regla:
-      //   - Si el SKU aparece en PRECIOFULL → active
-      //   - Si NO aparece → draft (sin importar stock ni list_price)
-      const productStatus: ShopifyProductStatus = hasPriceInPricelist
+      //   - En PRECIOFULL → active
+      //   - No en PRECIOFULL → draft
+      const desiredStatus: ShopifyProductStatus = hasPriceInPricelist
         ? "active"
         : "draft";
 
-      const odooPrice = priceFromPricelist; // solo reportamos el de PRECIOFULL
+      const odooPrice = hasPriceInPricelist ? priceFromPricelist! : null;
 
       try {
-        // Al mandar a Shopify, usamos el precio de PRECIOFULL si existe,
-        // si no, mandamos 0 (pero se queda en draft).
-        const odooProductForShopify = {
-          ...p,
-          list_price: odooPrice ?? 0,
-        };
+        // ¿Ya existe el SKU en Shopify?
+        const variants = await getVariantsBySku(sku);
 
-        const result = await upsertProductFromOdoo(
-          odooProductForShopify,
-          productStatus
-        );
+        if (!variants.length) {
+          // 👉 No existe → lo creamos
+          const priceForNew = hasPriceInPricelist ? odooPrice : 0;
 
-        const base = {
-          odoo_id: p.id,
-          shopify_product_id: result.product_id,
-          sku,
-          product_status: productStatus,
-          odoo_price: odooPrice,
-          odoo_qty: odooQty,
-        };
+          const product = await createProductFromOdoo(
+            p,
+            desiredStatus,
+            priceForNew
+          );
 
-        if (result.mode === "created") {
-          created.push(base);
+          created.push({
+            odoo_id: p.id,
+            shopify_product_id: product.id,
+            sku,
+            product_status: desiredStatus,
+            odoo_price: odooPrice,
+          });
         } else {
-          updated.push(base);
+          // 👉 Ya existe → solo aseguramos el status deseado
+          const productId = variants[0].product_id;
+
+          await updateProductStatus(productId, desiredStatus);
+
+          updated.push({
+            odoo_id: p.id,
+            shopify_product_id: productId,
+            sku,
+            product_status: desiredStatus,
+            odoo_price: odooPrice,
+          });
         }
       } catch (err: any) {
-        console.error("Error upsert producto Shopify", sku, err);
+        console.error("Error sync status producto Shopify", sku, err);
         errors.push({
           odoo_id: p.id,
           sku,
-          product_status: productStatus,
+          desired_status: desiredStatus,
           odoo_price: odooPrice,
-          odoo_qty: odooQty,
           message: err?.message || "Error desconocido",
         });
       }
