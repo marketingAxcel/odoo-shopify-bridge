@@ -256,29 +256,16 @@ export async function upsertProductFromOdoo(
   const variants = await getVariantsBySku(p.default_code);
 
   if (variants.length) {
-    const productId = variants[0].product_id;
-
-    // ✅ Solo actualizamos el STATUS del producto (active / draft)
-    await shopifyRequest(`products/${productId}.json`, {
-      method: "PUT",
-      body: JSON.stringify({
-        product: {
-          id: productId,
-          status: productStatus,
-        },
-      }),
-    });
-
-    // ❌ Ya NO tocamos el precio aquí. Eso lo maneja /api/sync-prices-all.
+    // Ya existe → no tocamos el precio aquí.
+    // El precio lo manejan /api/sync-prices-all y /api/sync-single-price
     return {
       mode: "updated" as const,
-      product_id: productId,
+      product_id: variants[0].product_id,
       variant_id: variants[0].id,
     };
   }
 
-  // Producto nuevo → lo creamos con el status indicado.
-  // El precio real lo corregirá luego /api/sync-prices-all.
+  // No existe → lo creamos con el estado indicado
   const product = await createProductFromOdoo(p, productStatus);
   const variant = product.variants[0];
 
@@ -288,6 +275,7 @@ export async function upsertProductFromOdoo(
     variant_id: variant.id,
   };
 }
+
 
 
 /**
