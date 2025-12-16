@@ -256,8 +256,7 @@ export async function upsertProductFromOdoo(
   const variants = await getVariantsBySku(p.default_code);
 
   if (variants.length) {
-    // Ya existe → no tocamos el precio aquí.
-    // El precio lo manejan /api/sync-prices-all y /api/sync-single-price
+    // ✅ Ya existe → NO tocamos precio aquí
     return {
       mode: "updated" as const,
       product_id: variants[0].product_id,
@@ -265,7 +264,7 @@ export async function upsertProductFromOdoo(
     };
   }
 
-  // No existe → lo creamos con el estado indicado
+  // Solo ponemos precio al CREAR el producto
   const product = await createProductFromOdoo(p, productStatus);
   const variant = product.variants[0];
 
