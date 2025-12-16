@@ -251,21 +251,35 @@ export async function updateVariantPriceBySku(
  */
 export async function upsertProductFromOdoo(
   p: OdooProductLike,
-  _productStatus: ShopifyProductStatus = "active"
+  productStatus: ShopifyProductStatus = "active"
 ) {
   const variants = await getVariantsBySku(p.default_code);
 
   if (variants.length) {
-    await updateVariantPriceBySku(p.default_code, p.list_price);
+    const productId = variants[0].product_id;
 
+    // ✅ Solo actualizamos el STATUS del producto (active / draft)
+    await shopifyRequest(`products/${productId}.json`, {
+      method: "PUT",
+      body: JSON.stringify({
+        product: {
+          id: productId,
+          status: productStatus,
+        },
+      }),
+    });
+
+    // ❌ Ya NO tocamos el precio aquí. Eso lo maneja /api/sync-prices-all.
     return {
       mode: "updated" as const,
-      product_id: variants[0].product_id,
+      product_id: productId,
       variant_id: variants[0].id,
     };
   }
 
-  const product = await createProductFromOdoo(p, _productStatus);
+  // Producto nuevo → lo creamos con el status indicado.
+  // El precio real lo corregirá luego /api/sync-prices-all.
+  const product = await createProductFromOdoo(p, productStatus);
   const variant = product.variants[0];
 
   return {
@@ -274,6 +288,7 @@ export async function upsertProductFromOdoo(
     variant_id: variant.id,
   };
 }
+
 
 /**
  * Cambiar el status de un producto de Shopify (active/draft/archived)
