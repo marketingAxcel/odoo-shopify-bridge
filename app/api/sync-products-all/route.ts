@@ -5,51 +5,34 @@ import {
   getPricesFromPricelistForSkus,
 } from "@/lib/odooClient";
 import {
-  createProductFromOdoo,
   getVariantsBySku,
+  createProductFromOdoo,
+  updateVariantPriceBySku,
   updateProductStatus,
   ShopifyProductStatus,
-  OdooProductLike,
 } from "@/lib/shopifyClient";
 
-// 👇 Ajusta este ID si tu lista PRECIOFULL tiene otro ID en Odoo
-const PRECIOFULL_ID = 625;
+// ID de la lista de precios FULL (PRECIOFULL = 625)
+const FULL_PRICELIST_ID = Number(process.env.ODOO_FULL_PRICELIST_ID ?? "625");
 
 /**
- * Sincroniza productos PAY de Odoo a Shopify por "bloques" (paginado),
- * SOLO para:
- *   - crear los productos que falten en Shopify
- *   - asegurar que el status sea:
- *       * "active" si el SKU está en PRECIOFULL
- *       * "draft"  si NO está en PRECIOFULL
+ * Recorre una página de productos PAY en Odoo
+ * y sincroniza con Shopify:
  *
- * NO toca precios ni inventario de productos ya existentes.
+ * - Precio SIEMPRE tomado de la lista FULL (ID 625).
+ * - Si NO hay precio válido en FULL (null, 0, 1) => product.status = "draft".
+ * - Si hay precio válido (> 1) => product.status = "active" + se actualiza el precio de la variante.
  *
- * Uso desde Postman / cron:
+ * Uso:
  *   POST /api/sync-products-all?limit=50&offset=0
- *   POST /api/sync-products-all?limit=50&offset=50
- *   ...
  */
 export async function POST(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
+    const limit = Number(searchParams.get("limit") ?? "50");
+    const offset = Number(searchParams.get("offset") ?? "0");
 
-    const limitParam = searchParams.get("limit");
-    const offsetParam = searchParams.get("offset");
-
-    const limit =
-      limitParam && !Number.isNaN(Number(limitParam)) && Number(limitParam) > 0
-        ? Number(limitParam)
-        : 50;
-
-    const offset =
-      offsetParam &&
-      !Number.isNaN(Number(offsetParam)) &&
-      Number(offsetParam) >= 0
-        ? Number(offsetParam)
-        : 0;
-
-    // 1) Página de productos desde Odoo
+    // 1) Página de productos desde Odoo (solo PAY...)
     const odooProducts = await getOdooProductsPage(limit, offset);
 
     if (!odooProducts.length) {
@@ -73,16 +56,17 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const skus = odooProducts
-      .map((p) => p.default_code)
-      .filter((sku) => !!sku);
+    const skus = odooProducts.map((p) => p.default_code);
 
-    // 2) Precios desde PRECIOFULL (solo para saber quién pertenece a la lista)
-    const priceLines = await getPricesFromPricelistForSkus(PRECIOFULL_ID, skus);
+    // 2) Precios desde la lista FULL (625)
+    const priceLines = await getPricesFromPricelistForSkus(
+      FULL_PRICELIST_ID,
+      skus
+    );
 
-    const priceBySku = new Map<string, number>();
+    const priceMap: Record<string, number> = {};
     for (const line of priceLines) {
-      priceBySku.set(line.default_code, line.price);
+      priceMap[line.default_code] = line.price;
     }
 
     const created: Array<{
@@ -101,74 +85,77 @@ export async function POST(req: NextRequest) {
       odoo_price: number | null;
     }> = [];
 
-    const errors: Array<{
-      odoo_id: number;
-      sku: string;
-      desired_status: ShopifyProductStatus;
-      odoo_price: number | null;
-      message: string;
-    }> = [];
+    const errors: Array<{ odoo_id: number; sku: string; message: string }> = [];
 
-    // 3) Procesar cada producto de esta página
-    for (const p of odooProducts as OdooProductLike[]) {
+    // 3) Recorrer productos y sincronizar
+    for (const p of odooProducts) {
       const sku = p.default_code;
+      const odooPrice = priceMap[sku] ?? null;
 
-      // 🔹 ¿Tiene precio en la lista PRECIOFULL?
-      const priceFromPricelist = priceBySku.get(sku);
-      const hasPriceInPricelist =
-        priceFromPricelist !== null && priceFromPricelist !== undefined;
+      // Regla:
+      // - SIN precio válido en FULL (null, 0, 1) → draft
+      // - CON precio válido > 1 → active
+      const hasValidPrice =
+        typeof odooPrice === "number" &&
+        Number.isFinite(odooPrice) &&
+        odooPrice > 1;
 
-      // 🔹 Regla:
-      //   - En PRECIOFULL → active
-      //   - No en PRECIOFULL → draft
-      const desiredStatus: ShopifyProductStatus = hasPriceInPricelist
-        ? "active"
-        : "draft";
-
-      const odooPrice = hasPriceInPricelist ? priceFromPricelist! : null;
+      const status: ShopifyProductStatus = hasValidPrice ? "active" : "draft";
 
       try {
-        // ¿Ya existe el SKU en Shopify?
+        // Buscar si ya existe en Shopify
         const variants = await getVariantsBySku(sku);
 
-        if (!variants.length) {
-          // 👉 No existe → lo creamos
-          const priceForNew = hasPriceInPricelist ? odooPrice : 0;
+        // Si existe, actualizamos precio y status
+        if (variants.length) {
+          const first = variants[0];
+
+          // 1) Si tiene precio válido, sobre-escribimos el precio de la variante
+          if (hasValidPrice) {
+            await updateVariantPriceBySku(sku, odooPrice!);
+          }
+
+          // 2) Actualizamos status del producto (aunque el precio sea inválido)
+          await updateProductStatus(first.product_id, status);
+
+          updated.push({
+            odoo_id: p.id,
+            shopify_product_id: first.product_id,
+            sku,
+            product_status: status,
+            odoo_price: hasValidPrice ? odooPrice! : null,
+          });
+        } else {
+          // No existe en Shopify → lo creamos
+          // Para crear, usamos:
+          // - status = active/draft según FULL
+          // - precio inicial = odooPrice válido, si hay; si no, list_price (Shopify igual lo verá como draft)
+          const priceForCreate =
+            hasValidPrice && odooPrice
+              ? odooPrice
+              : p.list_price ?? 0;
 
           const product = await createProductFromOdoo(
-            p,
-            desiredStatus,
-            priceForNew
+            {
+              ...p,
+              list_price: priceForCreate,
+            },
+            status
           );
 
           created.push({
             odoo_id: p.id,
             shopify_product_id: product.id,
             sku,
-            product_status: desiredStatus,
-            odoo_price: odooPrice,
-          });
-        } else {
-          // 👉 Ya existe → solo aseguramos el status deseado
-          const productId = variants[0].product_id;
-
-          await updateProductStatus(productId, desiredStatus);
-
-          updated.push({
-            odoo_id: p.id,
-            shopify_product_id: productId,
-            sku,
-            product_status: desiredStatus,
-            odoo_price: odooPrice,
+            product_status: status,
+            odoo_price: hasValidPrice ? odooPrice! : null,
           });
         }
       } catch (err: any) {
-        console.error("Error sync status producto Shopify", sku, err);
+        console.error("Error sync producto Shopify", sku, err);
         errors.push({
           odoo_id: p.id,
           sku,
-          desired_status: desiredStatus,
-          odoo_price: odooPrice,
           message: err?.message || "Error desconocido",
         });
       }

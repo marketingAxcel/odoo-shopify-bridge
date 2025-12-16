@@ -242,6 +242,7 @@ export async function updateVariantPriceBySku(
   return data.variant;
 }
 
+
 /**
  * Upsert completo clásico:
  * - Si el SKU ya existe en Shopify → actualiza precio
@@ -298,6 +299,7 @@ export async function updateProductStatus(
 
   return data.product;
 }
+
 
 /**
  * Obtener inventory_item_id de una variante a partir del SKU
