@@ -9,6 +9,35 @@ const SHOP_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN!;
 const SHOP_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN!;
 const LOCATION_ID = Number(process.env.SHOPIFY_LOCATION_ID!);
 
+function toShopifyPrice(value: unknown, decimals = 0): string {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return decimals === 0 ? String(Math.round(value)) : value.toFixed(decimals);
+  }
+
+  if (typeof value === "string") {
+    const s = value.trim();
+
+    // "123.529,35" -> "123529.35"
+    if (s.includes(",") && s.includes(".")) {
+      const n = Number(s.replace(/\./g, "").replace(",", "."));
+      if (Number.isFinite(n)) return decimals === 0 ? String(Math.round(n)) : n.toFixed(decimals);
+    }
+
+    // "123529,35" -> "123529.35"
+    if (s.includes(",") && !s.includes(".")) {
+      const n = Number(s.replace(",", "."));
+      if (Number.isFinite(n)) return decimals === 0 ? String(Math.round(n)) : n.toFixed(decimals);
+    }
+
+    // "123529.35"
+    const n = Number(s);
+    if (Number.isFinite(n)) return decimals === 0 ? String(Math.round(n)) : n.toFixed(decimals);
+  }
+
+  return decimals === 0 ? "0" : (0).toFixed(decimals);
+}
+
+
 if (!SHOP_DOMAIN || !SHOP_TOKEN) {
   console.warn(
     "[ShopifyClient] Faltan variables de entorno SHOPIFY_STORE_DOMAIN o SHOPIFY_ACCESS_TOKEN"
@@ -197,7 +226,7 @@ export async function createProductFromOdoo(
       variants: [
         {
           sku: p.default_code,
-          price: finalPrice.toString(),
+          price: toShopifyPrice(finalPrice, 0), // <- CAMBIO (COP sin centavos)
           inventory_management: "shopify",
           inventory_policy: "deny",
           inventory_quantity: 0,
@@ -214,14 +243,12 @@ export async function createProductFromOdoo(
   return data.product;
 }
 
+
 /**
  * Actualizar SOLO el precio de la variante cuyo SKU coincida
  * (lo usamos en otros endpoints, este no toca status)
  */
-export async function updateVariantPriceBySku(
-  sku: string,
-  newPrice: number
-) {
+export async function updateVariantPriceBySku(sku: string, newPrice: number) {
   const variants = await getVariantsBySku(sku);
   if (!variants.length) return null;
 
@@ -230,7 +257,7 @@ export async function updateVariantPriceBySku(
   const payload = {
     variant: {
       id: variant.id,
-      price: newPrice.toString(),
+      price: toShopifyPrice(newPrice, 0), // COP sin centavos
     },
   };
 
@@ -241,6 +268,7 @@ export async function updateVariantPriceBySku(
 
   return data.variant;
 }
+
 
 
 /**
@@ -364,3 +392,4 @@ export async function getVariantPriceBySku(
 
   return priceNum;
 }
+
