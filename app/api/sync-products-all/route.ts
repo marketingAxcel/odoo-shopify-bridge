@@ -1,9 +1,6 @@
 // app/api/sync-products-all/route.ts
 import { NextRequest } from "next/server";
-import {
-  getOdooProductsPage,
-  getPricesFromPricelistForSkus,
-} from "@/lib/odooClient";
+import { getOdooProductsPage } from "@/lib/odooClient";
 import {
   getVariantsBySku,
   createProductFromOdoo,
@@ -12,15 +9,12 @@ import {
   ShopifyProductStatus,
 } from "@/lib/shopifyClient";
 
-// ID de la lista de precios FULL (PRECIOFULL = 625)
-const FULL_PRICELIST_ID = Number(process.env.ODOO_FULL_PRICELIST_ID ?? "625");
-
 /**
  * Recorre una página de productos PAY en Odoo
  * y sincroniza con Shopify:
  *
- * - Precio SIEMPRE tomado de la lista FULL (ID 625).
- * - Si NO hay precio válido en FULL (null, 0, 1) => product.status = "draft".
+ * - Precio SIEMPRE tomado del producto en Odoo (list_price) SIN IVA.
+ * - Si NO hay precio válido (null, 0, 1) => product.status = "draft".
  * - Si hay precio válido (> 1) => product.status = "active" + se actualiza el precio de la variante.
  *
  * Uso:
@@ -49,24 +43,8 @@ export async function POST(req: NextRequest) {
           updated: [],
           errors: [],
         }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }
+        { status: 200, headers: { "Content-Type": "application/json" } }
       );
-    }
-
-    const skus = odooProducts.map((p) => p.default_code);
-
-    // 2) Precios desde la lista FULL (625)
-    const priceLines = await getPricesFromPricelistForSkus(
-      FULL_PRICELIST_ID,
-      skus
-    );
-
-    const priceMap: Record<string, number> = {};
-    for (const line of priceLines) {
-      priceMap[line.default_code] = line.price;
     }
 
     const created: Array<{
@@ -87,18 +65,19 @@ export async function POST(req: NextRequest) {
 
     const errors: Array<{ odoo_id: number; sku: string; message: string }> = [];
 
-    // 3) Recorrer productos y sincronizar
+    // 2) Recorrer productos y sincronizar
     for (const p of odooProducts) {
       const sku = p.default_code;
-      const odooPrice = priceMap[sku] ?? null;
+      const odooPrice =
+        typeof p.list_price === "number" && Number.isFinite(p.list_price)
+          ? p.list_price
+          : null;
 
       // Regla:
-      // - SIN precio válido en FULL (null, 0, 1) → draft
+      // - SIN precio válido (null, 0, 1) → draft
       // - CON precio válido > 1 → active
       const hasValidPrice =
-        typeof odooPrice === "number" &&
-        Number.isFinite(odooPrice) &&
-        odooPrice > 1;
+        typeof odooPrice === "number" && Number.isFinite(odooPrice) && odooPrice > 1;
 
       const status: ShopifyProductStatus = hasValidPrice ? "active" : "draft";
 
@@ -106,7 +85,6 @@ export async function POST(req: NextRequest) {
         // Buscar si ya existe en Shopify
         const variants = await getVariantsBySku(sku);
 
-        // Si existe, actualizamos precio y status
         if (variants.length) {
           const first = variants[0];
 
@@ -128,12 +106,9 @@ export async function POST(req: NextRequest) {
         } else {
           // No existe en Shopify → lo creamos
           // Para crear, usamos:
-          // - status = active/draft según FULL
-          // - precio inicial = odooPrice válido, si hay; si no, list_price (Shopify igual lo verá como draft)
-          const priceForCreate =
-            hasValidPrice && odooPrice
-              ? odooPrice
-              : p.list_price ?? 0;
+          // - status = active/draft según list_price
+          // - precio inicial = list_price válido; si no, 0
+          const priceForCreate = hasValidPrice ? odooPrice! : 0;
 
           const product = await createProductFromOdoo(
             {
@@ -177,10 +152,7 @@ export async function POST(req: NextRequest) {
         updated,
         errors,
       }),
-      {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }
+      { status: 200, headers: { "Content-Type": "application/json" } }
     );
   } catch (err: any) {
     console.error("Error en sync-products-all:", err);
@@ -189,10 +161,7 @@ export async function POST(req: NextRequest) {
         ok: false,
         error: err?.message || "Error interno",
       }),
-      {
-        status: 500,
-        headers: { "Content-Type": "application/json" },
-      }
+      { status: 500, headers: { "Content-Type": "application/json" } }
     );
   }
 }
