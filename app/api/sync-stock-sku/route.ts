@@ -17,7 +17,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 1) Stock de Odoo para ese SKU
     const stockLines = await getOdooStockBySkus([sku]);
     if (!stockLines.length) {
       return new Response(
@@ -32,7 +31,6 @@ export async function POST(req: NextRequest) {
 
     const line = stockLines[0];
 
-    // 2) Variante en Shopify
     const inventoryItemId = await getInventoryItemIdBySku(sku);
     if (!inventoryItemId) {
       return new Response(
@@ -47,7 +45,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 3) Actualizar inventario en Shopify
     const level = await setInventoryLevel(inventoryItemId, line.qty_available);
 
     return new Response(

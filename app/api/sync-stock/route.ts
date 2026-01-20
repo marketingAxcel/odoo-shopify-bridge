@@ -1,4 +1,3 @@
-// app/api/sync-stock/route.ts
 import { NextRequest } from "next/server";
 import { getOdooStockBySkus } from "@/lib/odooClient";
 import {
@@ -6,12 +5,6 @@ import {
   setInventoryLevel,
 } from "@/lib/shopifyClient";
 
-/**
- * Sincroniza el stock de **un solo SKU** entre Odoo y Shopify.
- *
- * Uso:
- *   POST /api/sync-stock?sku=PAY889
- */
 export async function POST(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
@@ -27,7 +20,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 1) Obtener stock desde Odoo para ese SKU
     const stockLines = await getOdooStockBySkus([sku]);
 
     if (!stockLines.length) {
@@ -60,7 +52,6 @@ export async function POST(req: NextRequest) {
     };
 
     try {
-      // 2) Buscar la variante en Shopify por SKU
       const inventoryItemId = await getInventoryItemIdBySku(line.default_code);
 
       if (!inventoryItemId) {
@@ -69,7 +60,6 @@ export async function POST(req: NextRequest) {
       } else {
         detail.inventory_item_id = inventoryItemId;
 
-        // 3) Actualizar inventario en Shopify
         const level = await setInventoryLevel(inventoryItemId, line.qty_available);
 
         detail.shopify_available =

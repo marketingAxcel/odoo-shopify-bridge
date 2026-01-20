@@ -1,4 +1,3 @@
-// app/api/sync-prices-all/route.ts
 import { NextRequest } from "next/server";
 import {
   getOdooProductsPage,
@@ -8,14 +7,6 @@ import { updateVariantPriceBySku } from "@/lib/shopifyClient";
 
 const PRICELIST_FULL_ID = Number(process.env.ODOO_PRICELIST_FULL_ID || "0");
 
-/**
- * Recorre TODAS las llantas PAY en Odoo
- * y sincroniza sus precios hacia Shopify,
- * usando la lista de precios PRECIOFULL (o list_price si no hay regla).
- *
- * Uso:
- *   POST /api/sync-prices-all
- */
 export async function POST(_req: NextRequest) {
   try {
     if (!PRICELIST_FULL_ID) {
@@ -38,14 +29,12 @@ export async function POST(_req: NextRequest) {
     }> = [];
 
     while (true) {
-      // 1) Traemos una página de llantas PAY
       const odooProducts = await getOdooProductsPage(PAGE_SIZE, offset);
       if (!odooProducts.length) break;
 
       const skus = odooProducts.map((p) => p.default_code);
       processedSkus += skus.length;
 
-      // 2) Precios desde Odoo para esos SKUs (PRECIOFULL + list_price)
       const priceLines = await getPricesFromPricelistForSkus(
         PRICELIST_FULL_ID,
         skus
@@ -56,7 +45,6 @@ export async function POST(_req: NextRequest) {
         priceBySku.set(line.default_code, line.price);
       }
 
-      // 3) Actualizar precios en Shopify
       for (const sku of skus) {
         const odooPrice = priceBySku.get(sku) ?? null;
         const detail: any = {
@@ -78,7 +66,6 @@ export async function POST(_req: NextRequest) {
           if (!variant) {
             detail.error = "SKU no encontrado en Shopify";
           } else {
-            // OJO: tu updateVariantPriceBySku actual retorna data.variant desde Shopify
             detail.variant_id = variant.id;
             detail.new_shopify_price = variant.price;
             updated++;
@@ -92,7 +79,7 @@ export async function POST(_req: NextRequest) {
       }
 
       offset += PAGE_SIZE;
-      if (offset > 5000) break; // freno de seguridad
+      if (offset > 5000) break; 
     }
 
     return new Response(

@@ -20,7 +20,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 1) Obtener precio desde Odoo (lista PRECIOFULL + list_price)
     const prices = await getPricesFromPricelistForSkus(PRICELIST_FULL_ID, [sku]);
 
     if (!prices.length) {
@@ -36,7 +35,6 @@ export async function POST(req: NextRequest) {
 
     const odooPrice = prices[0].price;
 
-    // 2) Actualizar precio en Shopify
     const variant = await updateVariantPriceBySku(sku, odooPrice);
 
     if (!variant) {

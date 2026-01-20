@@ -1,4 +1,3 @@
-// app/api/sync-stock-all/route.ts
 import { NextRequest } from "next/server";
 import { getOdooProductsPage, getOdooStockBySkus } from "@/lib/odooClient";
 import {
@@ -6,18 +5,10 @@ import {
   setInventoryLevel,
 } from "@/lib/shopifyClient";
 
-// pequeño helper para pausar un ratico entre llamadas a Shopify
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/**
- * Recorre TODAS las llantas PAY en Odoo
- * y sincroniza su inventario hacia Shopify.
- *
- * Uso:
- *   POST /api/sync-stock-all
- */
 export async function POST(_req: NextRequest) {
   try {
     const PAGE_SIZE = 50;
@@ -34,12 +25,9 @@ export async function POST(_req: NextRequest) {
       error?: string;
     }> = [];
 
-    // 🔹 1) Cargar SOLO una vez todos los SKUs de Shopify
-    //     para evitar miles de requests
     const skuToInventoryItem: Record<string, number> =
       await getAllInventoryItemsBySku();
 
-    // 🔹 2) Paginamos productos en Odoo
     while (true) {
       const odooProducts = await getOdooProductsPage(PAGE_SIZE, offset);
       if (!odooProducts.length) break;
@@ -47,10 +35,8 @@ export async function POST(_req: NextRequest) {
       const skus = odooProducts.map((p) => p.default_code);
       processedSkus += skus.length;
 
-      // Stock desde Odoo para esos SKUs
       const stockLines = await getOdooStockBySkus(skus);
 
-      // 🔹 3) Actualizar inventario en Shopify
       for (const line of stockLines) {
         const detail: any = {
           sku: line.default_code,
@@ -84,8 +70,7 @@ export async function POST(_req: NextRequest) {
 
           updated++;
 
-          // 😴 Ritmo tranqui: pequeña pausa para no saturar a Shopify
-          await sleep(120); // 120 ms entre updates aprox
+          await sleep(120);
         } catch (err: any) {
           console.error(
             "Error actualizando inventario",
@@ -99,7 +84,7 @@ export async function POST(_req: NextRequest) {
       }
 
       offset += PAGE_SIZE;
-      if (offset > 5000) break; // freno de seguridad
+      if (offset > 5000) break;
     }
 
     return new Response(

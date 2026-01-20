@@ -25,7 +25,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 1) Precio en Odoo (lista FULL 625)
     const priceLines = await getPricesFromPricelistForSkus(
       PRICELIST_FULL_ID,
       [sku]
@@ -46,10 +45,8 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 2) Precio actual en Shopify
     const oldPrice = await getVariantPriceBySku(sku);
 
-    // 3) Actualizar solo si es distinto
     let newPrice: number | null = null;
 
     if (oldPrice === null || oldPrice !== odooPrice) {

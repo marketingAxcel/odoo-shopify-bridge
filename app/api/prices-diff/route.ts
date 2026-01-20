@@ -1,4 +1,3 @@
-// app/api/prices-diff/route.ts
 import { NextRequest } from "next/server";
 import {
   getOdooProductsPage,
@@ -8,14 +7,6 @@ import { getVariantPriceBySku } from "@/lib/shopifyClient";
 
 const PRICELIST_FULL_ID = Number(process.env.ODOO_PRICELIST_FULL_ID || "0");
 
-/**
- * Reporte comparativo de precios Odoo (PRECIOFULL) vs Shopify.
- *
- * NO TOCA NADA, solo lee y compara.
- *
- * Uso:
- *   GET /api/prices-diff
- */
 export async function GET(_req: NextRequest) {
   try {
     if (!PRICELIST_FULL_ID) {
@@ -35,7 +26,6 @@ export async function GET(_req: NextRequest) {
 
     const allProducts: Prod[] = [];
 
-    // 1) Traer TODOS los productos PAY... desde Odoo
     while (true) {
       const page = await getOdooProductsPage(PAGE_SIZE, offset);
       if (!page.length) break;
@@ -49,7 +39,7 @@ export async function GET(_req: NextRequest) {
       }
 
       offset += PAGE_SIZE;
-      if (offset > 5000) break; // freno de seguridad
+      if (offset > 5000) break; 
     }
 
     if (!allProducts.length) {
@@ -83,12 +73,10 @@ export async function GET(_req: NextRequest) {
 
     const CHUNK_SIZE = 30;
 
-    // 2) Vamos por bloques de SKUs para pedir precios a Odoo y Shopify
     for (let i = 0; i < allProducts.length; i += CHUNK_SIZE) {
       const chunk = allProducts.slice(i, i + CHUNK_SIZE);
       const skus = chunk.map((p) => p.default_code);
 
-      // 2.1 Precios Odoo desde PRECIOFULL (solo si hay regla)
       const priceLines = await getPricesFromPricelistForSkus(
         PRICELIST_FULL_ID,
         skus
@@ -99,7 +87,6 @@ export async function GET(_req: NextRequest) {
         odooPriceBySku.set(line.default_code, line.price);
       }
 
-      // 2.2 Para cada SKU del chunk, preguntamos a Shopify su precio
       for (const p of chunk) {
         const sku = p.default_code;
 
@@ -111,7 +98,7 @@ export async function GET(_req: NextRequest) {
         try {
           shopifyPrice = await getVariantPriceBySku(sku);
         } catch (e) {
-          // si algo falla al leer Shopify, lo dejamos como null
+
           shopifyPrice = null;
         }
 
@@ -122,13 +109,12 @@ export async function GET(_req: NextRequest) {
           | "price_mismatch";
 
         if (odooPrice == null && shopifyPrice == null) {
-          status = "no_odoo_price"; // origen de verdad es Odoo: si ahí no hay, el problema es Odoo
+          status = "no_odoo_price"; 
         } else if (odooPrice == null && shopifyPrice != null) {
           status = "no_odoo_price";
         } else if (odooPrice != null && shopifyPrice == null) {
           status = "no_shopify_variant";
         } else {
-          // Ambos tienen precio → comparamos
           const diff = Math.abs((shopifyPrice as number) - (odooPrice as number));
           status = diff < 0.01 ? "ok" : "price_mismatch";
         }
@@ -144,7 +130,6 @@ export async function GET(_req: NextRequest) {
       }
     }
 
-    // 3) Resumen
     const summary = {
       total_products: allProducts.length,
       ok: items.filter((i) => i.status === "ok").length,

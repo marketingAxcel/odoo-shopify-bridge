@@ -1,26 +1,14 @@
-// app/api/sync-both/route.ts
 import { NextRequest } from "next/server";
 
-/**
- * Ruta “maestra”:
- * 1) Sincroniza stock
- * 2) Sincroniza precios
- * 3) Recorre TODOS los productos en batches (paginado) y hace upsert
- *
- * Uso:
- *   POST /api/sync-both
- */
+
 export async function POST(_req: NextRequest) {
   try {
-    // 🟢 IMPORTANTE:
-    // En producción usamos SIEMPRE el dominio público (sin protección SSO)
-    // En local usamos localhost
+
     const baseUrl =
       process.env.NODE_ENV === "production"
         ? "https://odoo-shopify-bridge.vercel.app"
         : "http://localhost:3000";
 
-    // 1) Stock
     const stockRes = await fetch(`${baseUrl}/api/sync-stock-all`, {
       method: "POST",
     });
@@ -41,7 +29,6 @@ export async function POST(_req: NextRequest) {
       );
     }
 
-    // 2) Precios
     const pricesRes = await fetch(`${baseUrl}/api/sync-prices-all`, {
       method: "POST",
     });
@@ -62,7 +49,6 @@ export async function POST(_req: NextRequest) {
       );
     }
 
-    // 3) Productos en batches (paginado)
     const LIMIT = 50;
     let offset = 0;
     const productBatches: any[] = [];
@@ -87,10 +73,10 @@ export async function POST(_req: NextRequest) {
       productBatches.push(json);
 
       const nextOffset = json?.next_offset;
-      if (nextOffset == null) break; // ya no hay más páginas
+      if (nextOffset == null) break; 
 
       offset = nextOffset;
-      if (offset > 5000) break; // freno de seguridad
+      if (offset > 5000) break; 
     }
 
     return new Response(

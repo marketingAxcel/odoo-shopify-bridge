@@ -1,11 +1,3 @@
-// lib/odooClient.ts
-
-// Variables de entorno necesarias (en Vercel):
-// ODOO_URL     = https://axcel.odoo.com
-// ODOO_DB      = solutto-consulting-axcel-17-0-12745094
-// ODOO_UID     = 2
-// ODOO_API_KEY = xxxxx
-
 const ODOO_URL = process.env.ODOO_URL!;
 const ODOO_DB = process.env.ODOO_DB!;
 const ODOO_UID = Number(process.env.ODOO_UID!);
@@ -17,9 +9,6 @@ if (!ODOO_URL || !ODOO_DB || !ODOO_UID || !ODOO_API_KEY) {
   );
 }
 
-/**
- * Llamada genérica JSON-RPC a Odoo
- */
 async function odooRpc<T = any>(
   model: string,
   method: string,
@@ -54,9 +43,6 @@ async function odooRpc<T = any>(
   return (data as any).result as T;
 }
 
-/**
- * Solo para testear (ya lo usaste en /api/odoo-test)
- */
 export async function findProductsBySku(skus: string[]) {
   if (!skus.length) return [];
   const domain = [["default_code", "in", skus]];
@@ -73,10 +59,6 @@ export async function findProductsBySku(skus: string[]) {
   }>;
 }
 
-/**
- * Productos de Odoo para sincronizar con Shopify
- * (llantas PAY...).
- */
 export type OdooProductForSync = {
   id: number;
   name: string;
@@ -85,19 +67,12 @@ export type OdooProductForSync = {
   description_sale?: string;
 };
 
-/**
- * Traer una página de productos desde Odoo
- * - Solo llantas: default_code que empiece por "PAY"
- * - Usado por /api/sync-products y /api/sync-stock
- */
 export async function getOdooProductsPage(
   limit = 20,
   offset = 0
 ): Promise<OdooProductForSync[]> {
   const domain = [
     ["default_code", "ilike", "PAY%"],
-    // Si quieres solo vendibles, descomenta:
-    // ["sale_ok", "=", true],
   ];
   const fields = ["id", "name", "default_code", "list_price", "description_sale"];
 
@@ -112,17 +87,12 @@ export async function getOdooProductsPage(
   return products as OdooProductForSync[];
 }
 
-/**
- * Línea de stock por producto
- */
+
 export type OdooStockLine = {
   default_code: string;
   qty_available: number;
 };
 
-/**
- * Obtener stock (qty_available) en Odoo por lista de SKUs
- */
 export async function getOdooStockBySkus(
   skus: string[]
 ): Promise<OdooStockLine[]> {
@@ -142,34 +112,17 @@ export async function getOdooStockBySkus(
   }));
 }
 
-/**
- * Precio calculado para un SKU según una lista de precios
- */
 export type OdooPriceLine = {
   default_code: string;
   price: number;
 };
 
-/**
- * Obtener precios desde una lista de precios específica
- * para una lista de SKUs (default_code).
- *
- * Usa SOLO la lista de precios (PRECIOFULL):
- *   - variante (product_id)
- *   - template (product_tmpl_id)
- *   - categoría (categ_id)
- *   - global
- *
- * Prioridad: variante > template > categoría > global.
- * Si NO hay ninguna regla aplicable → NO devuelve precio para ese SKU.
- */
 export async function getPricesFromPricelistForSkus(
   pricelistId: number,
   skus: string[]
 ): Promise<OdooPriceLine[]> {
   if (!skus.length) return [];
 
-  // 1) Productos por default_code
   const productDomain = [["default_code", "in", skus]];
   const productFields = ["id", "default_code", "product_tmpl_id", "categ_id"];
 
@@ -202,7 +155,6 @@ export async function getPricesFromPricelistForSkus(
     categIdByProdId.set(p.id, categId ?? null);
   }
 
-  // 2) Traer TODAS las líneas de esa lista de precios
   const itemDomain = [["pricelist_id", "=", pricelistId]];
   const itemFields = [
     "product_id",
@@ -259,7 +211,6 @@ export async function getPricesFromPricelistForSkus(
         : (item.categ_id as number);
       categItems.push({ categ_id: cid, price: item.fixed_price });
     } else {
-      // Regla global (sin producto, ni template, ni categoría)
       globalItems.push({ price: item.fixed_price });
     }
   }
@@ -273,29 +224,24 @@ export async function getPricesFromPricelistForSkus(
 
     let chosenPrice: number | null = null;
 
-    // 1) Regla por variante
     const vItem = variantItems.find((vi) => vi.product_id === prodId);
     if (vItem) {
       chosenPrice = vItem.price;
     } else if (tmplId != null) {
-      // 2) Regla por template
       const tItem = tmplItems.find((ti) => ti.product_tmpl_id === tmplId);
       if (tItem) {
         chosenPrice = tItem.price;
       } else if (categId != null) {
-        // 3) Regla por categoría
         const cItem = categItems.find((ci) => ci.categ_id === categId);
         if (cItem) {
           chosenPrice = cItem.price;
         } else if (globalItems.length) {
-          // 4) Regla global
           chosenPrice = globalItems[globalItems.length - 1].price;
         }
       } else if (globalItems.length) {
         chosenPrice = globalItems[globalItems.length - 1].price;
       }
     } else if (categId != null) {
-      // No hay template pero sí categoría
       const cItem = categItems.find((ci) => ci.categ_id === categId);
       if (cItem) {
         chosenPrice = cItem.price;

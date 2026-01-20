@@ -1,29 +1,14 @@
-// app/api/sync-products/route.ts
 import { NextRequest } from "next/server";
 import { getOdooProductsPage } from "@/lib/odooClient";
 import { upsertProductFromOdoo } from "@/lib/shopifyClient";
 
-/**
- * Sincroniza llantas desde Odoo hacia Shopify por páginas.
- * - Usa getOdooProductsPage: solo SKUs que empiezan por "PAY" (llantas).
- * - Por cada producto de Odoo hace un "upsert" en Shopify:
- *   - Si el SKU ya existe en Shopify -> actualiza (updated)
- *   - Si el SKU no existe         -> crea producto nuevo (created)
- *
- * Query params:
- *   - limit:  cuántos productos traer de Odoo (default 10)
- *   - offset: desde qué índice empezar (default 0)
- *
- * Ejemplo:
- *   POST /api/sync-products?limit=20&offset=0
- */
+
 export async function POST(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
     const limit = Number(searchParams.get("limit") || "10");
     const offset = Number(searchParams.get("offset") || "0");
 
-    // 1) Traer llantas desde Odoo (solo SKUs PAY..., según tu getOdooProductsPage)
     const odooProducts = await getOdooProductsPage(limit, offset);
 
     const created: Array<{
@@ -40,7 +25,6 @@ export async function POST(req: NextRequest) {
 
     const errors: Array<{ odoo_id: number; sku: string; message: string }> = [];
 
-    // 2) Por cada producto de Odoo, hacer upsert en Shopify
     for (const p of odooProducts) {
       try {
         const result = await upsertProductFromOdoo(p);
@@ -66,7 +50,6 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 3) Resumen
     return new Response(
       JSON.stringify({
         ok: true,

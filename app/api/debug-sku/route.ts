@@ -1,12 +1,8 @@
-// app/api/debug-sku/route.ts
 import { NextRequest } from "next/server";
 import { getOdooProductsPage } from "@/lib/odooClient";
 import { getVariantsBySku } from "@/lib/shopifyClient";
 
-/**
- * Busca un producto en Odoo recorriendo las páginas
- * que ya usamos en getOdooProductsPage.
- */
+
 async function findOdooProductBySku(sku: string) {
   const PAGE_SIZE = 200;
   let offset = 0;
@@ -23,17 +19,13 @@ async function findOdooProductBySku(sku: string) {
     if (found) return found;
 
     offset += PAGE_SIZE;
-    if (offset > 20000) break; // freno de seguridad
+    if (offset > 20000) break; 
   }
 
   return null;
 }
 
-/**
- * GET /api/debug-sku?sku=PAY115
- *
- * Devuelve info del SKU en Odoo y en Shopify para ver de dónde sale.
- */
+
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
@@ -54,10 +46,8 @@ export async function GET(req: NextRequest) {
 
     const cleanSku = sku.trim();
 
-    // Shopify: variantes con ese SKU
     const shopifyVariants = await getVariantsBySku(cleanSku);
 
-    // Odoo: producto con ese default_code
     const odooProduct = await findOdooProductBySku(cleanSku);
 
     return new Response(
