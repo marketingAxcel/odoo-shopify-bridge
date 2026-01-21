@@ -65,6 +65,7 @@ export type OdooProductForSync = {
   default_code: string;
   list_price: number;
   description_sale?: string;
+  tire_name?: string;
 };
 
 export async function getOdooProductsPage(
@@ -74,7 +75,15 @@ export async function getOdooProductsPage(
   const domain = [
     ["default_code", "ilike", "PAY%"],
   ];
-  const fields = ["id", "name", "default_code", "list_price", "description_sale"];
+
+  const fields = [
+    "id",
+    "name",
+    "default_code",
+    "list_price",
+    "description_sale",
+    "x_studio_nombre_de_la_llanta",
+  ];
 
   const products = await odooRpc("product.product", "search_read", [
     domain,
@@ -84,8 +93,16 @@ export async function getOdooProductsPage(
     offset,
   });
 
-  return products as OdooProductForSync[];
+  return (products as any[]).map((p) => ({
+    id: p.id,
+    name: p.name,
+    default_code: p.default_code,
+    list_price: p.list_price,
+    description_sale: p.description_sale,
+    tire_name: p.x_studio_nombre_de_la_llanta ?? "",
+  })) as OdooProductForSync[];
 }
+
 
 
 export type OdooStockLine = {

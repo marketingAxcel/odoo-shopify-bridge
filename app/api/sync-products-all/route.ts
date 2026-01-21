@@ -5,6 +5,7 @@ import {
   createProductFromOdoo,
   updateVariantPriceBySku,
   updateProductStatus,
+  upsertProductMetafield,
   ShopifyProductStatus,
 } from "@/lib/shopifyClient";
 
@@ -40,6 +41,7 @@ export async function POST(req: NextRequest) {
       sku: string;
       product_status: ShopifyProductStatus;
       odoo_price: number | null;
+      tire_name: string | null;
     }> = [];
 
     const updated: Array<{
@@ -48,12 +50,14 @@ export async function POST(req: NextRequest) {
       sku: string;
       product_status: ShopifyProductStatus;
       odoo_price: number | null;
+      tire_name: string | null;
     }> = [];
 
     const errors: Array<{ odoo_id: number; sku: string; message: string }> = [];
 
     for (const p of odooProducts) {
       const sku = p.default_code;
+
       const odooPrice =
         typeof p.list_price === "number" && Number.isFinite(p.list_price)
           ? p.list_price
@@ -63,6 +67,9 @@ export async function POST(req: NextRequest) {
         typeof odooPrice === "number" && Number.isFinite(odooPrice) && odooPrice > 1;
 
       const status: ShopifyProductStatus = hasValidPrice ? "active" : "draft";
+
+      const tireName =
+        typeof (p as any).tire_name === "string" ? (p as any).tire_name.trim() : "";
 
       try {
         const variants = await getVariantsBySku(sku);
@@ -76,22 +83,36 @@ export async function POST(req: NextRequest) {
 
           await updateProductStatus(first.product_id, status);
 
+          await upsertProductMetafield(
+            first.product_id,
+            "custom",
+            "nombre_de_la_llanta",
+            tireName,
+            "single_line_text_field"
+          );
+
           updated.push({
             odoo_id: p.id,
             shopify_product_id: first.product_id,
             sku,
             product_status: status,
             odoo_price: hasValidPrice ? odooPrice! : null,
+            tire_name: tireName || null,
           });
         } else {
           const priceForCreate = hasValidPrice ? odooPrice! : 0;
 
           const product = await createProductFromOdoo(
-            {
-              ...p,
-              list_price: priceForCreate,
-            },
+            { ...(p as any), list_price: priceForCreate },
             status
+          );
+
+          await upsertProductMetafield(
+            product.id,
+            "custom",
+            "nombre_de_la_llanta",
+            tireName,
+            "single_line_text_field"
           );
 
           created.push({
@@ -100,6 +121,7 @@ export async function POST(req: NextRequest) {
             sku,
             product_status: status,
             odoo_price: hasValidPrice ? odooPrice! : null,
+            tire_name: tireName || null,
           });
         }
       } catch (err: any) {
@@ -113,7 +135,7 @@ export async function POST(req: NextRequest) {
     }
 
     const totalProcessed = odooProducts.length;
-    const nextOffset = offset + totalProcessed;
+    const nextOffset = totalProcessed < limit ? null : offset + totalProcessed;
 
     return new Response(
       JSON.stringify({
