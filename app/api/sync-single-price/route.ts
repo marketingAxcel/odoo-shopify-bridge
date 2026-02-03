@@ -1,85 +1,88 @@
 import { NextRequest } from "next/server";
-import { getPricesFromPricelistForSkus } from "@/lib/odooClient";
+import { findProductsBySku, getOdooStockBySkus } from "@/lib/odooClient";
 import {
+  getVariantsBySku,
   getVariantPriceBySku,
   updateVariantPriceBySku,
 } from "@/lib/shopifyClient";
 
-const PRICELIST_FULL_ID = 625;
-
-export async function POST(req: NextRequest) {
+export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
-    const sku = searchParams.get("sku");
+    const sku = searchParams.get("sku")?.trim() || "";
 
     if (!sku) {
       return new Response(
-        JSON.stringify({
-          ok: false,
-          error: "Falta el parámetro ?sku=",
-        }),
-        {
-          status: 400,
-          headers: { "Content-Type": "application/json" },
-        }
+        JSON.stringify({ ok: false, error: "Falta el parámetro sku" }),
+        { status: 400, headers: { "content-type": "application/json" } }
       );
     }
 
-    const priceLines = await getPricesFromPricelistForSkus(
-      PRICELIST_FULL_ID,
-      [sku]
-    );
-    const odooPrice = priceLines.length ? priceLines[0].price : null;
+    const odooProducts = await findProductsBySku([sku]);
+    const odooProduct = odooProducts[0] ?? null;
 
-    if (odooPrice == null) {
-      return new Response(
-        JSON.stringify({
-          ok: false,
-          sku,
-          error: "El SKU no tiene precio en la lista FULL (625)",
-        }),
-        {
-          status: 404,
-          headers: { "Content-Type": "application/json" },
-        }
-      );
+    let odooStock = null;
+    let odooQty: number | null = null;
+
+    if (odooProduct) {
+      const stockLines = await getOdooStockBySkus([sku]);
+      odooStock = stockLines[0] ?? null;
+      odooQty = odooStock ? odooStock.qty_available ?? null : null;
     }
 
-    const oldPrice = await getVariantPriceBySku(sku);
+    const variants = await getVariantsBySku(sku);
+    const shopifyVariant = variants[0] ?? null;
 
-    let newPrice: number | null = null;
-
-    if (oldPrice === null || oldPrice !== odooPrice) {
-      await updateVariantPriceBySku(sku, odooPrice);
-      newPrice = odooPrice;
-    } else {
-      newPrice = oldPrice;
+    let shopifyPrice: number | null = null;
+    if (shopifyVariant) {
+      shopifyPrice = await getVariantPriceBySku(sku);
     }
 
-    return new Response(
-      JSON.stringify({
-        ok: true,
-        sku,
-        odoo_price: odooPrice,
-        shopify_old_price: oldPrice,
-        shopify_new_price: newPrice,
-      }),
-      {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
+    let updatedShopifyPrice: number | null = null;
+    if (odooProduct && typeof odooProduct.list_price === "number") {
+      const odooPrice = odooProduct.list_price;
+      if (shopifyVariant) {
+        await updateVariantPriceBySku(sku, odooPrice);
+        updatedShopifyPrice = odooPrice;
       }
-    );
+    }
+
+    const body = {
+      ok: true,
+      sku,
+      odoo: odooProduct
+        ? {
+            id: odooProduct.id,
+            name: odooProduct.name,
+            list_price: odooProduct.list_price,
+            qty_available: odooQty,
+          }
+        : null,
+      shopify: shopifyVariant
+        ? {
+            product_id: shopifyVariant.product_id,
+            variant_id: shopifyVariant.id,
+            inventory_item_id: shopifyVariant.inventory_item_id,
+            price_before: shopifyPrice,
+            price_after:
+              updatedShopifyPrice !== null ? updatedShopifyPrice : shopifyPrice,
+          }
+        : null,
+    };
+
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
   } catch (err: any) {
-    console.error("Error en /api/sync-single-price:", err);
     return new Response(
       JSON.stringify({
         ok: false,
-        error: err?.message || "Error interno",
+        error: err?.message || "Error interno en sync-single-price",
       }),
-      {
-        status: 500,
-        headers: { "Content-Type": "application/json" },
-      }
+      { status: 500, headers: { "content-type": "application/json" } }
     );
   }
 }
+
+export { GET as POST };
